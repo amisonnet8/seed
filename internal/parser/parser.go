@@ -2,10 +2,11 @@
 //
 // The grammar implemented here is intentionally a subset of seed_spec.md:
 // top-level func/var declarations, a block of statements limited to
-// variable declarations, scalar assignment, call expressions, and
-// return, plus literals and variable references as expressions. Later
-// development steps extend this grammar (operators, control flow,
-// arrays) one feature at a time.
+// variable declarations, assignment (scalar, compound, ++/--), call
+// expressions, and return, plus a full operator-precedence expression
+// grammar (§5), literals, and variable references. Later development
+// steps extend this grammar further (control flow, arrays) one feature
+// at a time.
 package parser
 
 import (
@@ -230,26 +231,46 @@ func (p *parser) parseVarDecl() (*ast.VarDecl, error) {
 	return decl, nil
 }
 
-// parseIdentStmt parses a statement starting with an identifier: either a
-// call expression (`f(...)`) or a scalar assignment (`name = value`).
+var compoundAssignOps = map[lexer.Kind]string{
+	lexer.PlusAssign:    "+",
+	lexer.MinusAssign:   "-",
+	lexer.StarAssign:    "*",
+	lexer.SlashAssign:   "/",
+	lexer.PercentAssign: "%",
+}
+
+// parseIdentStmt parses a statement starting with an identifier: a call
+// expression (`f(...)`), a scalar assignment (`name = value`), a compound
+// assignment (`name += value` etc.), or `name++`/`name--`.
 func (p *parser) parseIdentStmt() (ast.Stmt, error) {
 	name := p.advance() // Ident
-	switch p.cur().Kind {
-	case lexer.LParen:
+	switch {
+	case p.cur().Kind == lexer.LParen:
 		call, err := p.parseCallExprFrom(name)
 		if err != nil {
 			return nil, err
 		}
 		return &ast.ExprStmt{X: call, Line: call.Line}, nil
-	case lexer.Assign:
+	case p.cur().Kind == lexer.Assign:
 		p.advance()
 		val, err := p.parseExpr()
 		if err != nil {
 			return nil, err
 		}
 		return &ast.AssignStmt{Name: name.Literal, Value: val, Line: name.Line}, nil
+	case compoundAssignOps[p.cur().Kind] != "":
+		op := compoundAssignOps[p.cur().Kind]
+		p.advance()
+		val, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		return &ast.CompoundAssignStmt{Name: name.Literal, Op: op, Value: val, Line: name.Line}, nil
+	case p.cur().Kind == lexer.Inc || p.cur().Kind == lexer.Dec:
+		opTok := p.advance()
+		return &ast.IncDecStmt{Name: name.Literal, Op: opTok.Literal, Line: name.Line}, nil
 	default:
-		return nil, fmt.Errorf("line %d: expected '(' or '=' after %q", p.cur().Line, name.Literal)
+		return nil, fmt.Errorf("line %d: expected '(', '=', a compound assignment, or '++'/'--' after %q", p.cur().Line, name.Literal)
 	}
 }
 
@@ -265,12 +286,111 @@ func (p *parser) parseReturnStmt() (ast.Stmt, error) {
 	return &ast.ReturnStmt{X: x, Line: kw.Line}, nil
 }
 
-// parseExpr parses a primary expression. Step 2 covers literals, variable
-// references, and call expressions; operators (Step 3) are not part of
-// the grammar yet.
+// parseExpr parses a full expression, following seed_spec.md §5's
+// precedence table (lowest to highest: ||, &&, ==/!=, </<=/>/>=, +/-,
+// */%, unary !/-, then primaries/parentheses).
 func (p *parser) parseExpr() (ast.Expr, error) {
+	return p.parseOr()
+}
+
+// binOpNames maps a binary/logical operator token to its AST Op string.
+var binOpNames = map[lexer.Kind]string{
+	lexer.OrOr:    "||",
+	lexer.AndAnd:  "&&",
+	lexer.Eq:      "==",
+	lexer.Neq:     "!=",
+	lexer.Lt:      "<",
+	lexer.Lte:     "<=",
+	lexer.Gt:      ">",
+	lexer.Gte:     ">=",
+	lexer.Plus:    "+",
+	lexer.Minus:   "-",
+	lexer.Star:    "*",
+	lexer.Slash:   "/",
+	lexer.Percent: "%",
+}
+
+// parseBinaryLevel implements one precedence level: it parses one operand
+// via next, then folds in `next (op next)*` left-associatively for any of
+// the given token kinds.
+func (p *parser) parseBinaryLevel(next func() (ast.Expr, error), kinds ...lexer.Kind) (ast.Expr, error) {
+	left, err := next()
+	if err != nil {
+		return nil, err
+	}
+	for kindIn(p.cur().Kind, kinds) {
+		opTok := p.advance()
+		right, err := next()
+		if err != nil {
+			return nil, err
+		}
+		left = &ast.BinaryExpr{Op: binOpNames[opTok.Kind], X: left, Y: right, Line: opTok.Line}
+	}
+	return left, nil
+}
+
+func kindIn(k lexer.Kind, kinds []lexer.Kind) bool {
+	for _, want := range kinds {
+		if k == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *parser) parseOr() (ast.Expr, error) {
+	return p.parseBinaryLevel(p.parseAnd, lexer.OrOr)
+}
+
+func (p *parser) parseAnd() (ast.Expr, error) {
+	return p.parseBinaryLevel(p.parseEquality, lexer.AndAnd)
+}
+
+func (p *parser) parseEquality() (ast.Expr, error) {
+	return p.parseBinaryLevel(p.parseComparison, lexer.Eq, lexer.Neq)
+}
+
+func (p *parser) parseComparison() (ast.Expr, error) {
+	return p.parseBinaryLevel(p.parseAdditive, lexer.Lt, lexer.Lte, lexer.Gt, lexer.Gte)
+}
+
+func (p *parser) parseAdditive() (ast.Expr, error) {
+	return p.parseBinaryLevel(p.parseMultiplicative, lexer.Plus, lexer.Minus)
+}
+
+func (p *parser) parseMultiplicative() (ast.Expr, error) {
+	return p.parseBinaryLevel(p.parseUnary, lexer.Star, lexer.Slash, lexer.Percent)
+}
+
+func (p *parser) parseUnary() (ast.Expr, error) {
+	if p.cur().Kind == lexer.Not || p.cur().Kind == lexer.Minus {
+		opTok := p.advance()
+		x, err := p.parseUnary()
+		if err != nil {
+			return nil, err
+		}
+		op := "!"
+		if opTok.Kind == lexer.Minus {
+			op = "-"
+		}
+		return &ast.UnaryExpr{Op: op, X: x, Line: opTok.Line}, nil
+	}
+	return p.parsePrimary()
+}
+
+func (p *parser) parsePrimary() (ast.Expr, error) {
 	tok := p.cur()
 	switch tok.Kind {
+	case lexer.LParen:
+		p.advance()
+		x, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(lexer.RParen, "')'"); err != nil {
+			return nil, err
+		}
+		return x, nil
 	case lexer.String:
 		p.advance()
 		return &ast.StringLit{Value: tok.Literal, Line: tok.Line}, nil

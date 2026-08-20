@@ -21,6 +21,10 @@ func genStmt(g *funcGen, s ast.Stmt) error {
 		return genVarDecl(g, st)
 	case *ast.AssignStmt:
 		return genAssignStmt(g, st)
+	case *ast.CompoundAssignStmt:
+		return genCompoundAssignStmt(g, st)
+	case *ast.IncDecStmt:
+		return genIncDecStmt(g, st)
 	case *ast.ExprStmt:
 		return genExprStmt(g, st)
 	case *ast.ReturnStmt:
@@ -75,6 +79,42 @@ func genAssign(g *funcGen, ref varRef, value ast.Expr) error {
 		return err
 	}
 	g.emit("\tSET\t%s\t%s\n", ref.ValOp, v)
+	g.emit("\tSET\t%s\ttrue\n", ref.SetOp)
+	return nil
+}
+
+// genCompoundAssignStmt emits `name op= value` in place (SET's Go output
+// allows the target on both sides, e.g. `x = x + y`), then marks it set.
+func genCompoundAssignStmt(g *funcGen, stmt *ast.CompoundAssignStmt) error {
+	ref, ok := g.ctx.lookup(stmt.Name)
+	if !ok {
+		return fmt.Errorf("line %d: undefined variable %q", stmt.Line, stmt.Name)
+	}
+	v, err := genValue(g, stmt.Value)
+	if err != nil {
+		return err
+	}
+	if stmt.Op == "+" && ref.Type.Name == "String" {
+		g.emit("\tCONCAT\t%s\t%s\t%s\n", ref.ValOp, ref.ValOp, v)
+	} else if stmt.Op == "+" {
+		g.emit("\tADD\t%s\t%s\t%s\n", ref.ValOp, ref.ValOp, v)
+	} else {
+		g.emit("\t%s\t%s\t%s\t%s\n", arithInstr(stmt.Op), ref.ValOp, ref.ValOp, v)
+	}
+	g.emit("\tSET\t%s\ttrue\n", ref.SetOp)
+	return nil
+}
+
+func genIncDecStmt(g *funcGen, stmt *ast.IncDecStmt) error {
+	ref, ok := g.ctx.lookup(stmt.Name)
+	if !ok {
+		return fmt.Errorf("line %d: undefined variable %q", stmt.Line, stmt.Name)
+	}
+	instr := "ADD"
+	if stmt.Op == "--" {
+		instr = "SUB"
+	}
+	g.emit("\t%s\t%s\t%s\t1\n", instr, ref.ValOp, ref.ValOp)
 	g.emit("\tSET\t%s\ttrue\n", ref.SetOp)
 	return nil
 }

@@ -57,6 +57,27 @@ type AssignStmt struct {
 
 func (*AssignStmt) stmtNode() {}
 
+// CompoundAssignStmt is a compound assignment (seed_spec.md §5): `name
+// op= Value` where op is one of + - * / %. Like `++`/`--`, this only
+// exists as a statement, never inside an expression.
+type CompoundAssignStmt struct {
+	Name  string
+	Op    string // "+", "-", "*", "/", "%"
+	Value Expr
+	Line  int
+}
+
+func (*CompoundAssignStmt) stmtNode() {}
+
+// IncDecStmt is a postfix `name++` or `name--` statement.
+type IncDecStmt struct {
+	Name string
+	Op   string // "++" or "--"
+	Line int
+}
+
+func (*IncDecStmt) stmtNode() {}
+
 // ExprStmt is a statement consisting of a single expression (currently
 // only call expressions are valid here).
 type ExprStmt struct {
@@ -84,6 +105,31 @@ type Ident struct {
 }
 
 func (*Ident) exprNode() {}
+
+// UnaryExpr is a prefix unary operator: `!x` or `-x`. ResultType is
+// filled in by sema.Check; codegen relies on it to pick the right
+// AMIVM-IR type for the temporary that holds the result.
+type UnaryExpr struct {
+	Op         string // "!" or "-"
+	X          Expr
+	Line       int
+	ResultType Type
+}
+
+func (*UnaryExpr) exprNode() {}
+
+// BinaryExpr is a binary operator expression (seed_spec.md §5).
+// ResultType is filled in by sema.Check; codegen relies on it both to
+// pick the right AMIVM-IR type for the temporary that holds the result,
+// and to disambiguate `+` (ADD for Int/Float, CONCAT for String).
+type BinaryExpr struct {
+	Op         string // "+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=", "&&", "||"
+	X, Y       Expr
+	Line       int
+	ResultType Type
+}
+
+func (*BinaryExpr) exprNode() {}
 
 // StringLit is a string literal.
 type StringLit struct {
@@ -150,6 +196,10 @@ func ExprLine(e Expr) int {
 		return v.Line
 	case *CallExpr:
 		return v.Line
+	case *UnaryExpr:
+		return v.Line
+	case *BinaryExpr:
+		return v.Line
 	default:
 		return 0
 	}
@@ -161,6 +211,10 @@ func StmtLine(s Stmt) int {
 	case *VarDecl:
 		return v.Line
 	case *AssignStmt:
+		return v.Line
+	case *CompoundAssignStmt:
+		return v.Line
+	case *IncDecStmt:
 		return v.Line
 	case *ExprStmt:
 		return v.Line

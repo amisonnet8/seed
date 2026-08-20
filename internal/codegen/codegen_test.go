@@ -69,6 +69,86 @@ func Int main(String[] args) {
 	}
 }
 
+func TestPrecedenceMultiplicationBeforeAddition(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    Int r = 1 + 2 * 3
+    return 0
+}
+`)
+	mulIdx := strings.Index(ir, "MUL")
+	addIdx := strings.Index(ir, "ADD")
+	if mulIdx == -1 || addIdx == -1 || mulIdx > addIdx {
+		t.Errorf("expected MUL (2*3 binds tighter) to be emitted before ADD, got:\n%s", ir)
+	}
+}
+
+func TestPlusDispatchesOnType(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    Int a = 1
+    Int b = 2
+    Int sum = a + b
+    String x = "a"
+    String y = "b"
+    String cat = x + y
+    return 0
+}
+`)
+	if !strings.Contains(ir, "\tADD\t") {
+		t.Errorf("expected Int + Int to use ADD, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "\tCONCAT\t") {
+		t.Errorf("expected String + String to use CONCAT, got:\n%s", ir)
+	}
+}
+
+func TestUnaryMinusUsesSubFromZero(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    Float x = 1.5
+    Float y = -x
+    return 0
+}
+`)
+	if !strings.Contains(ir, "SUB\t%tmp\t0\t%x") {
+		t.Errorf("expected unary - to emit SUB against 0 (no dedicated negation instruction), got:\n%s", ir)
+	}
+}
+
+func TestCompoundAssignUpdatesInPlace(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    Int x = 1
+    x += 2
+    return 0
+}
+`)
+	if !strings.Contains(ir, "ADD\t%x\t%x\t2") {
+		t.Errorf("expected += to update the variable in place, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "SET\t%x_isset\ttrue") {
+		t.Errorf("expected += to mark the variable set, got:\n%s", ir)
+	}
+}
+
+func TestIncDecEmitsAddSubByOne(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    Int x = 1
+    x++
+    x--
+    return 0
+}
+`)
+	if !strings.Contains(ir, "ADD\t%x\t%x\t1") {
+		t.Errorf("expected ++ to emit ADD by 1, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "SUB\t%x\t%x\t1") {
+		t.Errorf("expected -- to emit SUB by 1, got:\n%s", ir)
+	}
+}
+
 func TestGlobalInitializerRunsInMainWrapper(t *testing.T) {
 	ir := generate(t, `
 Int counter = 42

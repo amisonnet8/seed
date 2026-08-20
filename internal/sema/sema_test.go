@@ -115,6 +115,156 @@ func Int main(String[] args) {
 	}
 }
 
+func TestOperatorsValidProgram(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int a = 1 + 2 * 3
+    Int b = (1 + 2) * 3
+    a += 1
+    a++
+    a--
+    String s = "a" + "b"
+    s += "c"
+    Bool cmp = a == b && a < b || !(a >= b)
+    Float f = -1.5
+    return 0
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestPlusRejectsMixedTypes(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int x = 1
+    String s = "a"
+    Int y = x + s
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "Int + String is not allowed") {
+		t.Fatalf("expected a mixed-type + error, got %v", err)
+	}
+}
+
+func TestMinusRejectsString(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    String a = "x"
+    String b = "y"
+    String c = a - b
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "is not supported for String") {
+		t.Fatalf("expected - to reject String, got %v", err)
+	}
+}
+
+func TestModuloRequiresInt(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Float x = 1.5
+    Float y = 2.0
+    Float z = x % y
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "requires Int operands") {
+		t.Fatalf("expected %% to require Int operands, got %v", err)
+	}
+}
+
+func TestComparisonRejectsMismatchedTypes(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int x = 1
+    Float y = 1.0
+    Bool b = x < y
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "cannot compare Int with Float") {
+		t.Fatalf("expected a comparison type-mismatch error, got %v", err)
+	}
+}
+
+func TestLogicalRequiresBoolOperands(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int x = 1
+    Bool b = x && true
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "logical operators require Bool operands") {
+		t.Fatalf("expected && to require Bool operands, got %v", err)
+	}
+}
+
+func TestUnaryMinusRejectsNonNumeric(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    String s = "x"
+    String t = -s
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "unary - expects Int or Float") {
+		t.Fatalf("expected unary - to reject String, got %v", err)
+	}
+}
+
+func TestUnaryNotRejectsNonBool(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int x = 1
+    Bool b = !x
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "unary ! expects Bool") {
+		t.Fatalf("expected unary ! to reject Int, got %v", err)
+	}
+}
+
+func TestIncDecRequiresNumeric(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    String s = "x"
+    s++
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "expects an Int or Float variable") {
+		t.Fatalf("expected ++ to reject String, got %v", err)
+	}
+}
+
+func TestCompoundAssignRejectsNull(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int x = 1
+    x += null
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "null cannot be used here") {
+		t.Fatalf("expected += to reject null, got %v", err)
+	}
+}
+
 func TestGlobalInitializerCannotReferenceAnotherVariable(t *testing.T) {
 	src := `
 Int a = 1

@@ -14,9 +14,10 @@ import (
 //
 // Supported so far: exactly one function named main with the fixed
 // entry-point signature from seed_spec.md §7, global and local variable
-// declarations/assignment with null semantics, and print/isnull calls.
-// General user-defined functions, operators, control flow, and arrays are
-// not supported yet.
+// declarations/assignment with null semantics, the full operator set
+// (§5) including compound assignment and ++/--, and print/isnull calls.
+// General user-defined functions, control flow, and arrays are not
+// supported yet.
 func Check(f *ast.File) error {
 	global := newScope(nil)
 	for _, g := range f.Globals {
@@ -68,6 +69,10 @@ func checkStmt(scope *scope, stmt ast.Stmt, retType ast.Type) error {
 		return checkVarDecl(scope, s)
 	case *ast.AssignStmt:
 		return checkAssignStmt(scope, s)
+	case *ast.CompoundAssignStmt:
+		return checkCompoundAssignStmt(scope, s)
+	case *ast.IncDecStmt:
+		return checkIncDecStmt(scope, s)
 	case *ast.ExprStmt:
 		_, err := checkCall(scope, s.X)
 		return err
@@ -108,6 +113,40 @@ func checkAssignStmt(scope *scope, stmt *ast.AssignStmt) error {
 		return fmt.Errorf("line %d: undefined variable %q", stmt.Line, stmt.Name)
 	}
 	return checkAssignable(scope, typ, stmt.Value)
+}
+
+// checkCompoundAssignStmt checks `name op= value` (seed_spec.md §5): both
+// sides must satisfy the same type rules as the corresponding binary
+// operator (see arithOpType), and null is never a valid operand.
+func checkCompoundAssignStmt(scope *scope, stmt *ast.CompoundAssignStmt) error {
+	typ, ok := scope.lookup(stmt.Name)
+	if !ok {
+		return fmt.Errorf("line %d: undefined variable %q", stmt.Line, stmt.Name)
+	}
+	if _, isNull := stmt.Value.(*ast.NullLit); isNull {
+		return fmt.Errorf("line %d: null cannot be used here", stmt.Line)
+	}
+	valType, err := inferType(scope, stmt.Value)
+	if err != nil {
+		return err
+	}
+	if _, err := arithOpType(stmt.Op, typ, valType); err != nil {
+		return fmt.Errorf("line %d: %s", stmt.Line, err)
+	}
+	return nil
+}
+
+// checkIncDecStmt checks `name++`/`name--`: name must be a declared Int
+// or Float variable.
+func checkIncDecStmt(scope *scope, stmt *ast.IncDecStmt) error {
+	typ, ok := scope.lookup(stmt.Name)
+	if !ok {
+		return fmt.Errorf("line %d: undefined variable %q", stmt.Line, stmt.Name)
+	}
+	if typ.Name != "Int" && typ.Name != "Float" {
+		return fmt.Errorf("line %d: %s expects an Int or Float variable, got %s", stmt.Line, stmt.Op, typ.Name)
+	}
+	return nil
 }
 
 func checkReturnStmt(scope *scope, stmt *ast.ReturnStmt, retType ast.Type) error {

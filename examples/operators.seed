@@ -1,0 +1,36 @@
+func Int main(String[] args) {
+    // String concatenation is the only operator result we can print
+    // directly right now: there's no Int/Float/Bool -> String
+    // conversion builtin yet (that's a later development step).
+    String name = "Seed"
+    String greeting = "Hello, " + name + "!"
+    print(greeting)
+
+    greeting += " Nice to meet you."
+    print(greeting)
+
+    // Arithmetic, comparison, and logical operators: exercised here to
+    // prove they parse, type-check, and compile correctly, even though
+    // nothing can convert their results to String to print them yet.
+    Int a = 10
+    Int b = 3
+    Int sum = a + b
+    Int diff = a - b
+    Int product = a * b
+    Int quotient = a / b
+    Int remainder = a % b
+    a += 1
+    a++
+    b--
+
+    Float x = 1.5
+    Float y = -x
+
+    Bool isEqual = a == b
+    Bool isLess = a < b
+    Bool both = isEqual && isLess
+    Bool either = isEqual || isLess
+    Bool notEqual = !isEqual
+
+    return 0
+}
