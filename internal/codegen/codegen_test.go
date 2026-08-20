@@ -440,3 +440,181 @@ func Int main(String[] args) {
 		t.Errorf("expected continue to GOTO the increment label %s, got:\n%s", continueLabel, ir)
 	}
 }
+
+func TestUserFunctionCompilesToOwnFUNCBlock(t *testing.T) {
+	ir := generate(t, `
+func Int double(Int n) {
+    return n * 2
+}
+func Int main(String[] args) {
+    Int x = double(21)
+    return 0
+}
+`)
+	if !strings.Contains(ir, "FUNC\t!double\t^int\t:\t^int\n") {
+		t.Errorf("expected a FUNC block for double, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "\tCALL\t%") || !strings.Contains(ir, "\t:\t!double\t") {
+		t.Errorf("expected a CALL to !double capturing a result, got:\n%s", ir)
+	}
+}
+
+func TestVoidFunctionHasNoReturnTypeInFUNCLine(t *testing.T) {
+	ir := generate(t, `
+func logIt(String s) {
+    print(s)
+}
+func Int main(String[] args) {
+    logIt("hi")
+    return 0
+}
+`)
+	if !strings.Contains(ir, "FUNC\t!logIt\t^string\t:\n") {
+		t.Errorf("expected logIt's FUNC line to have no return type, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "\tCALL\t:\t!logIt\t") {
+		t.Errorf("expected a void CALL to !logIt with no result operand, got:\n%s", ir)
+	}
+}
+
+func TestScalarParameterGetsIsSetTrueAtEntry(t *testing.T) {
+	ir := generate(t, `
+func Bool isSet(Int x) {
+    return isnull(x)
+}
+func Int main(String[] args) {
+    Bool b = isSet(1)
+    return 0
+}
+`)
+	funcStart := strings.Index(ir, "FUNC\t!isSet")
+	funcEnd := strings.Index(ir[funcStart:], "ENDFUNC")
+	body := ir[funcStart : funcStart+funcEnd]
+	if !strings.Contains(body, "SET\t%") || !strings.Contains(body, "_isset\ttrue") {
+		t.Errorf("expected the parameter's isset flag to be set true at function entry, got:\n%s", body)
+	}
+	if !strings.Contains(body, "NOT\t") {
+		t.Errorf("expected isnull(x) to compile to NOT, got:\n%s", body)
+	}
+}
+
+func TestArrayParameterUsesArgOperandDirectlyNoCopy(t *testing.T) {
+	// This is what makes an array argument "pass by reference"
+	// (seed_spec.md §7): the parameter's ASET/AGET must operate on $1
+	// itself, not a local copy.
+	ir := generate(t, `
+func mutate(Int[] a) {
+    a[0] = 99
+}
+func Int main(String[] args) {
+    Int[3] nums = {1, 2, 3}
+    mutate(nums)
+    return 0
+}
+`)
+	funcStart := strings.Index(ir, "FUNC\t!mutate")
+	funcEnd := strings.Index(ir[funcStart:], "ENDFUNC")
+	body := ir[funcStart : funcStart+funcEnd]
+	if !strings.Contains(body, "ASET\t$1\t0\t99") {
+		t.Errorf("expected ASET directly on $1 (no local copy), got:\n%s", body)
+	}
+}
+
+func TestArrayArgumentPassedAsIsToCall(t *testing.T) {
+	ir := generate(t, `
+func mutate(Int[] a) {
+    a[0] = 99
+}
+func Int main(String[] args) {
+    Int[3] nums = {1, 2, 3}
+    mutate(nums)
+    return 0
+}
+`)
+	mainStart := strings.Index(ir, "FUNC\t!seed_main")
+	mainEnd := strings.Index(ir[mainStart:], "ENDFUNC")
+	body := ir[mainStart : mainStart+mainEnd]
+	if !strings.Contains(body, "CALL\t:\t!mutate\t%nums\n") {
+		t.Errorf("expected mutate to be called with %%nums's own operand, got:\n%s", body)
+	}
+}
+
+func TestArrayReturnAssignmentCopiesWithRuntimeBoundsCheck(t *testing.T) {
+	// seed_spec.md §7's own example: result = sample(someArray).
+	ir := generate(t, `
+func Int[] sample(Int[] input) {
+    Int[3] result = {1, 2, 3}
+    return result
+}
+func Int main(String[] args) {
+    Int[2] someArray = {0, 0}
+    Int[5] result
+    result = sample(someArray)
+    return 0
+}
+`)
+	mainStart := strings.Index(ir, "FUNC\t!seed_main")
+	mainEnd := strings.Index(ir[mainStart:], "ENDFUNC")
+	body := ir[mainStart : mainStart+mainEnd]
+	if !strings.Contains(body, "!sample") {
+		t.Errorf("expected a call to !sample, got:\n%s", body)
+	}
+	if strings.Count(body, "?len\t") < 2 {
+		t.Errorf("expected len() queried for both the target and the call's result, got:\n%s", body)
+	}
+	if !strings.Contains(body, "AND\t") {
+		t.Errorf("expected the copy loop to bound on both lengths together, got:\n%s", body)
+	}
+}
+
+func TestReturnArrayLiteralBuildsExactSizedSlice(t *testing.T) {
+	ir := generate(t, `
+func Int[] sample() {
+    return {7, 8, 9}
+}
+func Int main(String[] args) {
+    return 0
+}
+`)
+	funcStart := strings.Index(ir, "FUNC\t!sample")
+	funcEnd := strings.Index(ir[funcStart:], "ENDFUNC")
+	body := ir[funcStart : funcStart+funcEnd]
+	if !strings.Contains(body, "SLMAKE\t%tmp\t^Intslice\t3") {
+		t.Errorf("expected a 3-element SLMAKE for the returned literal, got:\n%s", body)
+	}
+	if !strings.Contains(body, "RET\t%tmp") {
+		t.Errorf("expected RET to return the freshly built slice, got:\n%s", body)
+	}
+}
+
+func TestReturnNullForArrayEmitsNil(t *testing.T) {
+	ir := generate(t, `
+func Int[] empty() {
+    return null
+}
+func Int main(String[] args) {
+    return 0
+}
+`)
+	if !strings.Contains(ir, "RET\tnil") {
+		t.Errorf("expected `return null` for an array to compile to RET nil, got:\n%s", ir)
+	}
+}
+
+func TestRecursiveCallCompiles(t *testing.T) {
+	ir := generate(t, `
+func Int fact(Int n) {
+    if n <= 1 {
+        return 1
+    }
+    return n * fact(n - 1)
+}
+func Int main(String[] args) {
+    Int r = fact(5)
+    return 0
+}
+`)
+	if strings.Count(ir, "!fact") < 2 {
+		t.Errorf("expected fact to reference itself recursively (its own FUNC plus the recursive CALL), got:\n%s", ir)
+	}
+}

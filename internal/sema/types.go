@@ -9,7 +9,7 @@ import (
 // inferType computes the static type of e. null has no static type here;
 // callers that accept null must special-case it before calling this (see
 // checkAssignable).
-func inferType(scope *scope, e ast.Expr) (ast.Type, error) {
+func (c *checker) inferType(scope *scope, e ast.Expr) (ast.Type, error) {
 	switch v := e.(type) {
 	case *ast.StringLit:
 		return ast.Type{Name: "String"}, nil
@@ -26,13 +26,20 @@ func inferType(scope *scope, e ast.Expr) (ast.Type, error) {
 		}
 		return typ, nil
 	case *ast.IndexExpr:
-		return inferIndexType(scope, v)
+		return c.inferIndexType(scope, v)
 	case *ast.CallExpr:
-		return inferCallType(scope, v)
+		typ, hasValue, err := c.inferCallType(scope, v)
+		if err != nil {
+			return ast.Type{}, err
+		}
+		if !hasValue {
+			return ast.Type{}, fmt.Errorf("line %d: %s has no return value", v.Line, v.Callee)
+		}
+		return typ, nil
 	case *ast.UnaryExpr:
-		return inferUnaryType(scope, v)
+		return c.inferUnaryType(scope, v)
 	case *ast.BinaryExpr:
-		return inferBinaryType(scope, v)
+		return c.inferBinaryType(scope, v)
 	case *ast.NullLit:
 		return ast.Type{}, fmt.Errorf("line %d: null cannot be used here", v.Line)
 	default:
@@ -43,7 +50,7 @@ func inferType(scope *scope, e ast.Expr) (ast.Type, error) {
 // inferIndexType checks `a[Index]` (seed_spec.md §4): a must be an
 // array, and Index a non-null Int. The result is a's scalar element
 // type.
-func inferIndexType(scope *scope, idx *ast.IndexExpr) (ast.Type, error) {
+func (c *checker) inferIndexType(scope *scope, idx *ast.IndexExpr) (ast.Type, error) {
 	arrType, ok := scope.lookup(idx.Name)
 	if !ok {
 		return ast.Type{}, fmt.Errorf("line %d: undefined variable %q", idx.Line, idx.Name)
@@ -54,7 +61,7 @@ func inferIndexType(scope *scope, idx *ast.IndexExpr) (ast.Type, error) {
 	if _, isNull := idx.Index.(*ast.NullLit); isNull {
 		return ast.Type{}, fmt.Errorf("line %d: null cannot be used here", idx.Line)
 	}
-	indexType, err := inferType(scope, idx.Index)
+	indexType, err := c.inferType(scope, idx.Index)
 	if err != nil {
 		return ast.Type{}, err
 	}
@@ -67,11 +74,11 @@ func inferIndexType(scope *scope, idx *ast.IndexExpr) (ast.Type, error) {
 // operandType infers e's type for use as an operator's operand, rejecting
 // `null` (no operator accepts it) and arrays (seed_spec.md §5 defines no
 // array operators).
-func operandType(scope *scope, e ast.Expr) (ast.Type, error) {
+func (c *checker) operandType(scope *scope, e ast.Expr) (ast.Type, error) {
 	if _, ok := e.(*ast.NullLit); ok {
 		return ast.Type{}, fmt.Errorf("line %d: null cannot be used here", ast.ExprLine(e))
 	}
-	t, err := inferType(scope, e)
+	t, err := c.inferType(scope, e)
 	if err != nil {
 		return ast.Type{}, err
 	}
@@ -83,8 +90,8 @@ func operandType(scope *scope, e ast.Expr) (ast.Type, error) {
 
 // inferUnaryType checks a prefix unary expression and records its result
 // type on the node for codegen (see ast.UnaryExpr.ResultType).
-func inferUnaryType(scope *scope, u *ast.UnaryExpr) (ast.Type, error) {
-	xt, err := operandType(scope, u.X)
+func (c *checker) inferUnaryType(scope *scope, u *ast.UnaryExpr) (ast.Type, error) {
+	xt, err := c.operandType(scope, u.X)
 	if err != nil {
 		return ast.Type{}, err
 	}
@@ -107,12 +114,12 @@ func inferUnaryType(scope *scope, u *ast.UnaryExpr) (ast.Type, error) {
 
 // inferBinaryType checks a binary expression and records its result type
 // on the node for codegen (see ast.BinaryExpr.ResultType).
-func inferBinaryType(scope *scope, b *ast.BinaryExpr) (ast.Type, error) {
-	xt, err := operandType(scope, b.X)
+func (c *checker) inferBinaryType(scope *scope, b *ast.BinaryExpr) (ast.Type, error) {
+	xt, err := c.operandType(scope, b.X)
 	if err != nil {
 		return ast.Type{}, err
 	}
-	yt, err := operandType(scope, b.Y)
+	yt, err := c.operandType(scope, b.Y)
 	if err != nil {
 		return ast.Type{}, err
 	}
@@ -196,42 +203,81 @@ func logicalType(xt, yt ast.Type) (ast.Type, error) {
 }
 
 // inferCallType type-checks a call's arguments and returns its result
-// type. Only print and isnull are recognized so far (seed_spec.md §9);
-// everything else is "not supported yet" rather than "undefined", since
-// the full builtin set lands in a later development step.
-func inferCallType(scope *scope, call *ast.CallExpr) (ast.Type, error) {
+// type. ok is false when the callee has no return value (print, or a
+// user function declared without one) — valid only in statement
+// position; inferType rejects it as a value. print and isnull remain
+// special-cased here (seed_spec.md §9); every other name is looked up in
+// c.funcs, the whole-program signature table built once up front, so a
+// call to a function declared later in the file still resolves.
+func (c *checker) inferCallType(scope *scope, call *ast.CallExpr) (typ ast.Type, ok bool, err error) {
 	switch call.Callee {
 	case "print":
 		if len(call.Args) != 1 {
-			return ast.Type{}, fmt.Errorf("line %d: print expects exactly 1 argument", call.Line)
+			return ast.Type{}, false, fmt.Errorf("line %d: print expects exactly 1 argument", call.Line)
 		}
-		argType, err := inferType(scope, call.Args[0])
+		argType, err := c.inferType(scope, call.Args[0])
 		if err != nil {
-			return ast.Type{}, err
+			return ast.Type{}, false, err
 		}
 		if argType != (ast.Type{Name: "String"}) {
-			return ast.Type{}, fmt.Errorf("line %d: print expects a String argument, got %s", call.Line, typeName(argType))
+			return ast.Type{}, false, fmt.Errorf("line %d: print expects a String argument, got %s", call.Line, typeName(argType))
 		}
-		return ast.Type{}, nil
+		return ast.Type{}, false, nil
 
 	case "isnull":
 		if len(call.Args) != 1 {
-			return ast.Type{}, fmt.Errorf("line %d: isnull expects exactly 1 argument", call.Line)
+			return ast.Type{}, false, fmt.Errorf("line %d: isnull expects exactly 1 argument", call.Line)
 		}
-		ident, ok := call.Args[0].(*ast.Ident)
-		if !ok {
-			return ast.Type{}, fmt.Errorf("line %d: isnull expects a variable", call.Line)
+		ident, identOk := call.Args[0].(*ast.Ident)
+		if !identOk {
+			return ast.Type{}, false, fmt.Errorf("line %d: isnull expects a variable", call.Line)
 		}
-		typ, ok := scope.lookup(ident.Name)
-		if !ok {
-			return ast.Type{}, fmt.Errorf("line %d: undefined variable %q", ident.Line, ident.Name)
+		typ, found := scope.lookup(ident.Name)
+		if !found {
+			return ast.Type{}, false, fmt.Errorf("line %d: undefined variable %q", ident.Line, ident.Name)
 		}
 		if typ.IsArray {
-			return ast.Type{}, fmt.Errorf("line %d: isnull does not support arrays", call.Line)
+			return ast.Type{}, false, fmt.Errorf("line %d: isnull does not support arrays", call.Line)
 		}
-		return ast.Type{Name: "Bool"}, nil
+		return ast.Type{Name: "Bool"}, true, nil
+
+	case "main":
+		return ast.Type{}, false, fmt.Errorf("line %d: main cannot be called directly", call.Line)
 
 	default:
-		return ast.Type{}, fmt.Errorf("line %d: unsupported function call %q", call.Line, call.Callee)
+		sig, exists := c.funcs[call.Callee]
+		if !exists {
+			return ast.Type{}, false, fmt.Errorf("line %d: undefined function %q", call.Line, call.Callee)
+		}
+		if len(call.Args) != len(sig.Params) {
+			return ast.Type{}, false, fmt.Errorf("line %d: %s expects %d argument(s), got %d", call.Line, call.Callee, len(sig.Params), len(call.Args))
+		}
+		for i, arg := range call.Args {
+			want := sig.Params[i]
+			if want.IsArray {
+				// Arrays are always passed by reference (seed_spec.md
+				// §7), which only makes sense for an existing array
+				// variable — not a literal or another call's result.
+				ident, identOk := arg.(*ast.Ident)
+				if !identOk {
+					return ast.Type{}, false, fmt.Errorf("line %d: argument %d to %s must be an array variable", call.Line, i+1, call.Callee)
+				}
+				argType, found := scope.lookup(ident.Name)
+				if !found {
+					return ast.Type{}, false, fmt.Errorf("line %d: undefined variable %q", ident.Line, ident.Name)
+				}
+				if argType != want {
+					return ast.Type{}, false, fmt.Errorf("line %d: argument %d to %s: cannot use %s as %s", call.Line, i+1, call.Callee, typeName(argType), typeName(want))
+				}
+				continue
+			}
+			if err := c.checkAssignable(scope, want, arg); err != nil {
+				return ast.Type{}, false, err
+			}
+		}
+		if sig.Return == nil {
+			return ast.Type{}, false, nil
+		}
+		return *sig.Return, true, nil
 	}
 }

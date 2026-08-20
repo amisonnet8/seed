@@ -1,0 +1,73 @@
+func String concat(String s1, String s2) {
+    return s1 + s2
+}
+
+func greet(String name) {
+    print(concat("Hello, ", name) + "!")
+}
+
+// arrays are always passed by reference (seed_spec.md §7): mutations
+// through the parameter are visible to the caller
+func doubleAll(Int[] a) {
+    Int i = 0
+    while i < 3 {
+        a[i] = a[i] * 2
+        i++
+    }
+}
+
+// a function can return an array without stating a size (seed_spec.md
+// §7's `func Int[] 関数名(...)` form); assigning its result applies the
+// same truncate/pad rule as an array literal
+func Int[] sample(Int[] input) {
+    Int[3] result = {100, 200, 300}
+    return result
+}
+
+// recursion works the same as any other call
+func Int fact(Int n) {
+    if n <= 1 {
+        return 1
+    }
+    return n * fact(n - 1)
+}
+
+func Int main(String[] args) {
+    greet("Seed")
+
+    Int[3] nums = {1, 2, 3}
+    doubleAll(nums)
+    String doubled = ""
+    for x in nums {
+        if x == 2 {
+            doubled += "2"
+        } elif x == 4 {
+            doubled += "4"
+        } elif x == 6 {
+            doubled += "6"
+        }
+    }
+    print(doubled)
+
+    Int[2] dummy = {0, 0}
+    Int[5] padded
+    padded = sample(dummy)
+    String marks = ""
+    Int i = 0
+    while i < 5 {
+        if padded[i] == 0 {
+            marks += "0"
+        } else {
+            marks += "1"
+        }
+        i++
+    }
+    print(marks)
+
+    Int f = fact(5)
+    if f == 120 {
+        print("5! = 120")
+    }
+
+    return 0
+}

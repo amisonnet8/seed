@@ -176,6 +176,6 @@ func genCallValue(g *funcGen, call *ast.CallExpr) (string, error) {
 		g.emit("\tNOT\t%s\t%s\n", tmp, ref.SetOp)
 		return tmp, nil
 	default:
-		return "", fmt.Errorf("line %d: unsupported function call %q", call.Line, call.Callee)
+		return genCall(g, call, true)
 	}
 }

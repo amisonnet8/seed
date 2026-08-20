@@ -353,6 +353,13 @@ func genIncDecStmt(g *funcGen, stmt *ast.IncDecStmt) error {
 	return nil
 }
 
+// genExprStmt compiles a call expression used as a whole statement.
+// print and isnull are special-cased (isnull is legal but pointless here
+// — sema allows any value-producing call as a statement, its result
+// simply discarded); every other name is a user function, compiled via
+// the shared genCall with wantValue=false — which is also correct even
+// when that function does return something, since omitting CALL's
+// result operand (multi1) is valid AMIVM-IR/Go for discarding it.
 func genExprStmt(g *funcGen, st *ast.ExprStmt) error {
 	call, ok := st.X.(*ast.CallExpr)
 	if !ok {
@@ -369,8 +376,12 @@ func genExprStmt(g *funcGen, st *ast.ExprStmt) error {
 		}
 		g.emit("\tCALL\t:\t?fmt.Println\t%s\n", arg)
 		return nil
+	case "isnull":
+		_, err := genCallValue(g, call)
+		return err
 	default:
-		return fmt.Errorf("line %d: unsupported function call %q", call.Line, call.Callee)
+		_, err := genCall(g, call, false)
+		return err
 	}
 }
 
@@ -379,10 +390,31 @@ func genReturnStmt(g *funcGen, st *ast.ReturnStmt) error {
 		g.emit("\tRET\n")
 		return nil
 	}
-	v, err := genValue(g, st.X)
+	v, err := genReturnValue(g, st.X)
 	if err != nil {
 		return err
 	}
 	g.emit("\tRET\t%s\n", v)
 	return nil
+}
+
+// genReturnValue handles the two return-value shapes genValue doesn't
+// (it rejects both, since neither has a context-free meaning on its
+// own — see ast.ArrayLit's doc and genValue's NullLit case): `return
+// null` for an array return type (sema only allows this for arrays —
+// see sema's checkReturnStmt — so it always means "empty array" here,
+// i.e. Go's nil slice), and `return {...}`, which needs g.retType (set
+// by genFuncDecl) to know the element type since an array literal has
+// none of its own. Every other expression — a variable, a call, an
+// operator expression — already has a well-defined value through the
+// ordinary genValue path.
+func genReturnValue(g *funcGen, x ast.Expr) (string, error) {
+	switch v := x.(type) {
+	case *ast.NullLit:
+		return "nil", nil
+	case *ast.ArrayLit:
+		return genReturnArrayLiteral(g, v)
+	default:
+		return genValue(g, x)
+	}
 }

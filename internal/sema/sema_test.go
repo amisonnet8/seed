@@ -578,7 +578,7 @@ func Int main(String[] args) {
 	}
 }
 
-func TestWholeArrayReassignmentFromAnotherArrayRejected(t *testing.T) {
+func TestWholeArrayReassignmentFromAnotherArrayAllowed(t *testing.T) {
 	src := `
 func Int main(String[] args) {
     Int[3] a = {1, 2, 3}
@@ -587,9 +587,23 @@ func Int main(String[] args) {
     return 0
 }
 `
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestArrayValueTypeMismatchRejected(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int[3] a = {1, 2, 3}
+    String[3] b = {"x", "y", "z"}
+    a = b
+    return 0
+}
+`
 	err := check(t, src)
-	if err == nil || !strings.Contains(err.Error(), "array can only be reassigned with an array literal or null") {
-		t.Fatalf("expected array-to-array reassignment to be rejected, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "cannot use String[] as Int[]") {
+		t.Fatalf("expected a type-mismatch error, got %v", err)
 	}
 }
 
@@ -673,5 +687,335 @@ func Int main(String[] args) {
 	err := check(t, src)
 	if err == nil || !strings.Contains(err.Error(), "global array's size must be an Int literal") {
 		t.Fatalf("expected a global array size restriction error, got %v", err)
+	}
+}
+
+func TestFunctionsValidProgram(t *testing.T) {
+	src := `
+func String concat(String s1, String s2) {
+    return s1 + s2
+}
+
+func greet(String name) {
+    print(concat("Hello, ", name))
+}
+
+func Int[] sample(Int[] input) {
+    Int[3] result = {1, 2, 3}
+    return result
+}
+
+func Int fact(Int n) {
+    if n <= 1 {
+        return 1
+    }
+    return n * fact(n - 1)
+}
+
+func Int main(String[] args) {
+    greet("Seed")
+    Int[2] dummy = {0, 0}
+    Int[5] result
+    result = sample(dummy)
+    Int f = fact(5)
+    return 0
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestForwardFunctionReferenceAllowed(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int r = helper(5)
+    return 0
+}
+
+func Int helper(Int x) {
+    return x * 2
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("forward references between functions should be allowed, got %v", err)
+	}
+}
+
+func TestMainCannotBeCalledDirectly(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    main(args)
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "main cannot be called directly") {
+		t.Fatalf("expected main to be uncallable, got %v", err)
+	}
+}
+
+func TestDuplicateFunctionRejected(t *testing.T) {
+	src := `
+func Int helper() {
+    return 1
+}
+func Int helper() {
+    return 2
+}
+func Int main(String[] args) {
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), `duplicate function "helper"`) {
+		t.Fatalf("expected a duplicate-function error, got %v", err)
+	}
+}
+
+func TestReservedBuiltinNameRejectedAsFunctionName(t *testing.T) {
+	src := `
+func Int print() {
+    return 0
+}
+func Int main(String[] args) {
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "reserved builtin name") {
+		t.Fatalf("expected a reserved-name error, got %v", err)
+	}
+}
+
+func TestSeedMainInternalNameRejected(t *testing.T) {
+	src := `
+func Int seed_main() {
+    return 0
+}
+func Int main(String[] args) {
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "reserved for Seed's internal use") {
+		t.Fatalf("expected seed_main to be rejected, got %v", err)
+	}
+}
+
+func TestDuplicateParameterNameRejected(t *testing.T) {
+	src := `
+func Int add(Int a, Int a) {
+    return a
+}
+func Int main(String[] args) {
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), `duplicate parameter "a"`) {
+		t.Fatalf("expected a duplicate-parameter error, got %v", err)
+	}
+}
+
+func TestCallArgumentCountMismatch(t *testing.T) {
+	src := `
+func Int add(Int a, Int b) {
+    return a + b
+}
+func Int main(String[] args) {
+    Int x = add(1)
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "expects 2 argument(s), got 1") {
+		t.Fatalf("expected an argument-count error, got %v", err)
+	}
+}
+
+func TestCallArgumentTypeMismatch(t *testing.T) {
+	src := `
+func Int add(Int a, Int b) {
+    return a + b
+}
+func Int main(String[] args) {
+    Int x = add(1, "two")
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "cannot use String as Int") {
+		t.Fatalf("expected an argument-type error, got %v", err)
+	}
+}
+
+func TestArrayArgumentMustBeVariable(t *testing.T) {
+	src := `
+func Int sum(Int[] a) {
+    return 0
+}
+func Int main(String[] args) {
+    Int x = sum({1, 2, 3})
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "must be an array variable") {
+		t.Fatalf("expected array arguments to require a plain variable, got %v", err)
+	}
+}
+
+func TestUndefinedFunctionCallRejected(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int x = doesNotExist(1)
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), `undefined function "doesNotExist"`) {
+		t.Fatalf("expected an undefined-function error, got %v", err)
+	}
+}
+
+func TestVoidCallUsedAsValueRejected(t *testing.T) {
+	src := `
+func logIt(String s) {
+    print(s)
+}
+func Int main(String[] args) {
+    Int x = logIt("hi")
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "has no return value") {
+		t.Fatalf("expected a void-call-as-value error, got %v", err)
+	}
+}
+
+func TestVoidCallAsStatementAllowed(t *testing.T) {
+	src := `
+func logIt(String s) {
+    print(s)
+}
+func Int main(String[] args) {
+    logIt("hi")
+    return 0
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestVoidFunctionCannotReturnValue(t *testing.T) {
+	src := `
+func logIt(String s) {
+    return s
+}
+func Int main(String[] args) {
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "this function has no return value") {
+		t.Fatalf("expected a void-function-returns-value error, got %v", err)
+	}
+}
+
+func TestFunctionMustReturnOnEveryPath(t *testing.T) {
+	src := `
+func Int helper(Int x) {
+    if x == 1 {
+        return 1
+    }
+}
+func Int main(String[] args) {
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "helper does not return a value on every path") {
+		t.Fatalf("expected a non-exhaustive-return error, got %v", err)
+	}
+}
+
+func TestReturnNullForScalarRejected(t *testing.T) {
+	src := `
+func Int helper() {
+    return null
+}
+func Int main(String[] args) {
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "cannot return null for a scalar return type") {
+		t.Fatalf("expected null to be rejected for a scalar return, got %v", err)
+	}
+}
+
+func TestReturnNullForArrayAllowed(t *testing.T) {
+	src := `
+func Int[] helper() {
+    return null
+}
+func Int main(String[] args) {
+    return 0
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestReturnArrayVariableAllowed(t *testing.T) {
+	// seed_spec.md §7's own example returns a local array like this.
+	src := `
+func Int[] sample(Int[] input) {
+    Int[3] result = {1, 2, 3}
+    return result
+}
+func Int main(String[] args) {
+    return 0
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestReturnArrayLiteralAllowed(t *testing.T) {
+	src := `
+func Int[] sample() {
+    return {1, 2, 3}
+}
+func Int main(String[] args) {
+    return 0
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestArrayFunctionReturnAssignedWithTruncatePad(t *testing.T) {
+	// seed_spec.md §7's own example.
+	src := `
+func Int[] sample(Int[] input) {
+    Int[3] result = {1, 2, 3}
+    return result
+}
+func Int main(String[] args) {
+    Int[2] someArray = {0, 0}
+    Int[5] result
+    result = sample(someArray)
+    return 0
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

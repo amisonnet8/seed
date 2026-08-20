@@ -31,11 +31,37 @@ func genArrayVarDecl(g *funcGen, decl *ast.VarDecl, ref varRef) error {
 	g.declareVar(ref.ValOp, sliceType)
 	g.emit("\tSLMAKE\t%s\t%s\t%s\n", ref.ValOp, sliceType, sizeOp)
 
-	lit, ok := decl.Init.(*ast.ArrayLit)
-	if !ok {
-		return nil // no initializer, or explicit `null` — already all zero
+	return genArrayInitFrom(g, ref, sizeOp, decl.Init)
+}
+
+// genArrayInitFrom emits ref's value (already freshly SLMAKE'd to
+// boundOp elements by the caller) from value, which sema guarantees is
+// one of: absent/null (nothing further to do — already all zero),
+// an array literal, a plain array variable, or a function call
+// returning an array (see sema's checkArrayValue).
+func genArrayInitFrom(g *funcGen, ref varRef, boundOp string, value ast.Expr) error {
+	switch v := value.(type) {
+	case nil:
+		return nil
+	case *ast.NullLit:
+		return nil
+	case *ast.ArrayLit:
+		return genArrayLitElements(g, ref, boundOp, v)
+	case *ast.Ident:
+		srcRef, ok := g.ctx.lookup(v.Name)
+		if !ok {
+			return fmt.Errorf("line %d: undefined variable %q", v.Line, v.Name)
+		}
+		return genArrayCopyFromSource(g, ref, boundOp, srcRef.ValOp)
+	case *ast.CallExpr:
+		sourceOp, err := genCall(g, v, true)
+		if err != nil {
+			return err
+		}
+		return genArrayCopyFromSource(g, ref, boundOp, sourceOp)
+	default:
+		return fmt.Errorf("codegen: unsupported array value %T (sema bug)", value)
 	}
-	return genArrayLitElements(g, ref, sizeOp, lit)
 }
 
 // genGlobalArrayVarDecl is genArrayVarDecl's counterpart for a top-level
@@ -113,14 +139,68 @@ func genArrayReassign(g *funcGen, ref varRef, value ast.Expr) error {
 	g.emit("\tCALL\t%s\t:\t?len\t%s\n", lenOp, ref.ValOp)
 	g.emit("\tSLMAKE\t%s\t%s\t%s\n", ref.ValOp, sliceType, lenOp)
 
-	if _, isNull := value.(*ast.NullLit); isNull {
-		return nil // already all zero
+	return genArrayInitFrom(g, ref, lenOp, value)
+}
+
+// genArrayCopyFromSource compiles copying an array from another array's
+// operand (a plain variable's, or a call's captured result) into ref —
+// e.g. seed_spec.md §7's example: `result = sample(...)`. ref must
+// already be freshly SLMAKE'd to targetLenOp elements (genArrayVarDecl/
+// genArrayReassign both do this before calling genArrayInitFrom, which
+// dispatches here). This copies min(targetLenOp, len(sourceOp)) elements,
+// implementing the truncate/pad rule the same way genArrayLitElements
+// does for a literal, but via a genuine runtime loop since the source's
+// element count isn't known at codegen time the way a literal's is.
+func genArrayCopyFromSource(g *funcGen, ref varRef, targetLenOp, sourceOp string) error {
+	srcLenOp := g.newTemp("^int")
+	g.emit("\tCALL\t%s\t:\t?len\t%s\n", srcLenOp, sourceOp)
+
+	idxOp := g.newTemp("^int")
+	g.emit("\tSET\t%s\t0\n", idxOp)
+	startLabel, bodyLabel, endLabel := g.newLabel(), g.newLabel(), g.newLabel()
+
+	g.emit("\tLABEL\t#%s\n", startLabel)
+	underTarget := g.newTemp("^bool")
+	g.emit("\tLT\t%s\t%s\t%s\n", underTarget, idxOp, targetLenOp)
+	underSrc := g.newTemp("^bool")
+	g.emit("\tLT\t%s\t%s\t%s\n", underSrc, idxOp, srcLenOp)
+	cond := g.newTemp("^bool")
+	g.emit("\tAND\t%s\t%s\t%s\n", cond, underTarget, underSrc)
+	g.emit("\tIF\t%s\t#%s\n", cond, bodyLabel)
+	g.emit("\tGOTO\t#%s\n", endLabel)
+	g.emit("\tLABEL\t#%s\n", bodyLabel)
+
+	elemIRType, err := seedTypeToIR(ast.Type{Name: ref.Type.Name})
+	if err != nil {
+		return err
 	}
-	lit, ok := value.(*ast.ArrayLit)
-	if !ok {
-		return fmt.Errorf("codegen: array reassignment value must be an array literal or null (sema bug)")
+	elemTmp := g.newTemp(elemIRType)
+	g.emit("\tAGET\t%s\t%s\t%s\n", elemTmp, sourceOp, idxOp)
+	g.emit("\tASET\t%s\t%s\t%s\n", ref.ValOp, idxOp, elemTmp)
+	g.emit("\tADD\t%s\t%s\t1\n", idxOp, idxOp)
+	g.emit("\tGOTO\t#%s\n", startLabel)
+	g.emit("\tLABEL\t#%s\n", endLabel)
+	return nil
+}
+
+// genReturnArrayLiteral compiles `return {...}` for a function whose
+// return type is an array (see stmt.go's genReturnValue). Unlike an
+// assignment target, a return value has no pre-existing length to
+// truncate/pad against, so it's simply built at exactly the literal's
+// own size.
+func genReturnArrayLiteral(g *funcGen, lit *ast.ArrayLit) (string, error) {
+	if g.retType == nil || !g.retType.IsArray {
+		return "", fmt.Errorf("codegen: array literal returned from a non-array-returning function (sema bug)")
 	}
-	return genArrayLitElements(g, ref, lenOp, lit)
+	sliceType := g.slices.use(g.retType.Name)
+	sizeOp := strconv.Itoa(len(lit.Elems))
+	tmp := g.newTemp(sliceType)
+	g.emit("\tSLMAKE\t%s\t%s\t%s\n", tmp, sliceType, sizeOp)
+	ref := varRef{Type: *g.retType, ValOp: tmp}
+	if err := genArrayLitElements(g, ref, sizeOp, lit); err != nil {
+		return "", err
+	}
+	return tmp, nil
 }
 
 // genIndexAssign compiles `name[Index] = value` (seed_spec.md §4). Unlike

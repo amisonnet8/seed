@@ -58,12 +58,29 @@ import (
 )
 
 // seedMainFunc is the amivm-level name for the user's `main`. It must
-// never collide with a Seed-level function name once user-defined
-// functions are supported (seed_spec.md's own `main` is reserved and
-// forbidden as an ordinary call target, but this internal name lives in
-// the same amivm namespace as Seed function names and will need its own
-// reservation once general FuncDecls are compiled).
+// never collide with a Seed-level function name — sema.Check rejects a
+// user function literally named "seed_main" for exactly this reason
+// (see sema's seedMainInternalName, which must match this constant).
 const seedMainFunc = "seed_main"
+
+// seedFuncAmivmName maps a Seed-level function name to its amivm-level
+// one: "main" becomes seedMainFunc (see codegen.go's package doc for
+// why), and every other name passes through unchanged.
+func seedFuncAmivmName(name string) string {
+	if name == "main" {
+		return seedMainFunc
+	}
+	return name
+}
+
+// funcSig is a compiled function's signature, needed at every call site
+// to know each parameter's type (scalar vs. array — array arguments are
+// passed by reference, see scope.go's declareParam) and the AMIVM-IR
+// type of its return value, if it has one.
+type funcSig struct {
+	Params []ast.Type
+	Return *ast.Type
+}
 
 // Generate translates f (already validated by sema.Check) into AMIVM-IR text.
 func Generate(f *ast.File) (string, error) {
@@ -75,6 +92,15 @@ func Generate(f *ast.File) (string, error) {
 	}
 	if main == nil {
 		return "", fmt.Errorf("codegen: no main function (run sema.Check first)")
+	}
+
+	sigs := map[string]funcSig{}
+	for _, fn := range f.Funcs {
+		params := make([]ast.Type, len(fn.Params))
+		for i, p := range fn.Params {
+			params[i] = p.Type
+		}
+		sigs[fn.Name] = funcSig{Params: params, Return: fn.ReturnType}
 	}
 
 	// "String" is always needed for main's String[] args parameter, even
@@ -89,7 +115,7 @@ func Generate(f *ast.File) (string, error) {
 	// FUNC.
 	globals := map[string]varRef{}
 	var globalDecls strings.Builder
-	initGen := &funcGen{ctx: newFuncCtx(nil), slices: slices}
+	initGen := &funcGen{ctx: newFuncCtx(nil), slices: slices, sigs: sigs}
 	for _, gdecl := range f.Globals {
 		ref, err := genGlobalVarDecl(initGen, &globalDecls, gdecl)
 		if err != nil {
@@ -98,9 +124,13 @@ func Generate(f *ast.File) (string, error) {
 		globals[gdecl.Name] = ref
 	}
 
-	g := &funcGen{ctx: newFuncCtx(globals), slices: slices}
-	if err := genBlock(g, main.Body); err != nil {
-		return "", err
+	var funcsIR strings.Builder
+	for _, fn := range f.Funcs {
+		ir, err := genFuncDecl(fn, globals, slices, sigs)
+		if err != nil {
+			return "", err
+		}
+		funcsIR.WriteString(ir)
 	}
 
 	var b strings.Builder
@@ -113,13 +143,7 @@ func Generate(f *ast.File) (string, error) {
 	}
 
 	b.WriteString(globalDecls.String())
-
-	fmt.Fprintf(&b, "FUNC\t!%s\t%s\t:\t^int\n", seedMainFunc, sliceTypeToken("String"))
-	for _, d := range g.decls {
-		fmt.Fprintf(&b, "\tVAR\t%s\t%s\n", d.Op, d.IRType)
-	}
-	b.WriteString(g.b.String())
-	b.WriteString("ENDFUNC\n")
+	b.WriteString(funcsIR.String())
 
 	b.WriteString("FUNC\t!main\t:\n")
 	b.WriteString("\tVAR\t%exitcode\t^int\n")
@@ -257,6 +281,8 @@ type funcGen struct {
 	b         strings.Builder
 	ctx       *funcCtx
 	slices    *sliceRegistry
+	sigs      map[string]funcSig
+	retType   *ast.Type // this function's return type, nil if it has none; see stmt.go's genReturnValue
 	labelSeq  int
 	loopStack []loopLabels
 }

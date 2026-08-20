@@ -57,6 +57,32 @@ func (c *funcCtx) declare(name string, typ ast.Type) (varRef, error) {
 	return ref, nil
 }
 
+// declareParam registers a function parameter in the current (top-level)
+// scope (seed_spec.md §7). Its value operand is the raw argument
+// reference ($N) — never a local copy. A scalar parameter still gets a
+// hoisted, function-wide-unique isset companion, immediately SET to true
+// by the caller (see func.go's genFuncDecl), so isnull() behaves
+// consistently even though a parameter is always already assigned. An
+// array parameter gets no isset companion at all, matching every other
+// array (see array.go's doc) — and using $N directly, with no copy, is
+// also exactly what makes an array argument "pass by reference"
+// (seed_spec.md §7): ASET/AGET through this varRef reach the same Go
+// slice header the caller passed, so element writes are visible there
+// too.
+func (c *funcCtx) declareParam(name string, typ ast.Type, argIndex int) (varRef, error) {
+	cur := c.scopes[len(c.scopes)-1]
+	if _, exists := cur[name]; exists {
+		return varRef{}, fmt.Errorf("%q is already declared in this scope", name)
+	}
+	ref := varRef{Type: typ, ValOp: fmt.Sprintf("$%d", argIndex)}
+	if !typ.IsArray {
+		internal := c.freshInternal(name)
+		ref.SetOp = "%" + internal + "_isset"
+	}
+	cur[name] = ref
+	return ref, nil
+}
+
 // freshInternal returns a function-wide-unique internal name derived from
 // base, reserving it (and its "_isset" companion) so later declarations
 // never collide with it.
