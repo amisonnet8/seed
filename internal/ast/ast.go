@@ -95,6 +95,46 @@ type ReturnStmt struct {
 
 func (*ReturnStmt) stmtNode() {}
 
+// IfClause is one `if`/`elif` condition-and-body pair.
+type IfClause struct {
+	Cond Expr
+	Body []Stmt
+}
+
+// IfStmt is an if/elif/else chain (seed_spec.md §6). Clauses holds the
+// `if` clause followed by zero or more `elif` clauses, in source order.
+// Else is nil when there is no `else` clause.
+type IfStmt struct {
+	Clauses []IfClause
+	Else    []Stmt
+	Line    int
+}
+
+func (*IfStmt) stmtNode() {}
+
+// WhileStmt is a `while` loop (seed_spec.md §6).
+type WhileStmt struct {
+	Cond Expr
+	Body []Stmt
+	Line int
+}
+
+func (*WhileStmt) stmtNode() {}
+
+// BreakStmt exits the innermost enclosing loop.
+type BreakStmt struct {
+	Line int
+}
+
+func (*BreakStmt) stmtNode() {}
+
+// ContinueStmt advances the innermost enclosing loop to its next iteration.
+type ContinueStmt struct {
+	Line int
+}
+
+func (*ContinueStmt) stmtNode() {}
+
 // Expr is implemented by every expression node.
 type Expr interface{ exprNode() }
 
@@ -219,6 +259,14 @@ func StmtLine(s Stmt) int {
 	case *ExprStmt:
 		return v.Line
 	case *ReturnStmt:
+		return v.Line
+	case *IfStmt:
+		return v.Line
+	case *WhileStmt:
+		return v.Line
+	case *BreakStmt:
+		return v.Line
+	case *ContinueStmt:
 		return v.Line
 	default:
 		return 0

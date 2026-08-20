@@ -28,10 +28,11 @@ type funcCtx struct {
 	globals map[string]varRef
 }
 
+// newFuncCtx returns an empty context with no scope pushed yet: genBlock
+// pushes one for every block it compiles, including the function's own
+// top-level body, so there is exactly one place that does it.
 func newFuncCtx(globals map[string]varRef) *funcCtx {
-	c := &funcCtx{used: map[string]int{}, globals: globals}
-	c.push()
-	return c
+	return &funcCtx{used: map[string]int{}, globals: globals}
 }
 
 func (c *funcCtx) push() {

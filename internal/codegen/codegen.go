@@ -23,6 +23,29 @@
 //     isnull() needs the isset flag; a null assignment additionally
 //     resets the value to its zero form so a later plain read still sees
 //     the base value.
+//
+// A third, added in Step 4 (see stmt.go's genIfStmt/genWhileStmt):
+// AMIVM-IR has no structured control-flow instructions, only LABEL/GOTO
+// and a conditional "IF cond label" that jumps only when true. Every
+// Seed block (`{ }`) also gets its own funcCtx scope via genBlock, even
+// though the resulting Go variables all still live in one flat function
+// namespace (see scope.go) — this is what makes shadowing inside an
+// if/while body safe.
+//
+// A fourth, forced by the third: since every Seed variable (and every
+// expression temp) ends up as a flat `var` in one Go function body with
+// no enclosing braces, a forward jump that skips a `VAR` — an `elif`
+// chain skipping a later clause's body, a `break` jumping past the rest
+// of a loop body — trips Go's "goto jumps over variable declaration"
+// rule the moment that skipped body declares anything, which if/while
+// bodies routinely do. So funcGen hoists every VAR to the top of the
+// function (see decls/newTemp below) and never emits one inline; only
+// the SET that actually assigns a value stays at its original position.
+// A declaration with no initializer therefore still needs a SET — see
+// stmt.go's genVarDecl resetting to `null` — so that re-running the same
+// declaration on a later loop iteration still resets the variable,
+// instead of silently keeping whatever the previous iteration left in
+// the (now one-time-only zeroed) hoisted slot.
 package codegen
 
 import (
@@ -73,6 +96,9 @@ func Generate(f *ast.File) (string, error) {
 	g := &funcGen{ctx: newFuncCtx(globals)}
 	if err := genBlock(g, main.Body); err != nil {
 		return "", err
+	}
+	for _, d := range g.decls {
+		fmt.Fprintf(&b, "\tVAR\t%s\t%s\n", d.Op, d.IRType)
 	}
 	b.WriteString(g.b.String())
 	b.WriteString("ENDFUNC\n")
@@ -159,20 +185,68 @@ func zeroValueLiteral(t ast.Type) (string, error) {
 
 // funcGen accumulates the AMIVM-IR body of a single function being
 // compiled, alongside the scope/name-mangling state needed to resolve
-// Seed variable references and mint fresh temporaries.
+// Seed variable references and mint fresh temporaries/labels. decls and
+// b are kept separate — and only combined by the caller once generation
+// finishes — so that every VAR ends up hoisted before any control flow
+// (see codegen.go's package doc).
 type funcGen struct {
-	b   strings.Builder
-	ctx *funcCtx
+	decls     []varDecl
+	b         strings.Builder
+	ctx       *funcCtx
+	labelSeq  int
+	loopStack []loopLabels
+}
+
+// varDecl is one hoisted VAR line, emitted at the top of the function.
+type varDecl struct {
+	Op     string
+	IRType string
+}
+
+// loopLabels is the pair of labels a while loop pushes for break/continue
+// to target: Continue re-checks the loop condition, Break exits the loop.
+type loopLabels struct {
+	Continue string
+	Break    string
 }
 
 func (g *funcGen) emit(format string, args ...any) {
 	fmt.Fprintf(&g.b, format, args...)
 }
 
+// declareVar records a hoisted VAR for op (see funcGen's doc comment).
+func (g *funcGen) declareVar(op, irType string) {
+	g.decls = append(g.decls, varDecl{Op: op, IRType: irType})
+}
+
 // newTemp declares a fresh local variable of the given AMIVM-IR type
 // (e.g. "^bool") to hold an intermediate result, and returns its operand.
 func (g *funcGen) newTemp(irType string) string {
 	name := g.ctx.freshInternal("tmp")
-	g.emit("\tVAR\t%%%s\t%s\n", name, irType)
-	return "%" + name
+	op := "%" + name
+	g.declareVar(op, irType)
+	return op
+}
+
+// newLabel mints a fresh label name, unique within this function. Go
+// scopes labels per-function, so a plain counter needs no further
+// qualification (unlike local variable names, which do — see scope.go).
+func (g *funcGen) newLabel() string {
+	g.labelSeq++
+	return fmt.Sprintf("L%d", g.labelSeq)
+}
+
+func (g *funcGen) pushLoop(continueLabel, breakLabel string) {
+	g.loopStack = append(g.loopStack, loopLabels{Continue: continueLabel, Break: breakLabel})
+}
+
+func (g *funcGen) popLoop() {
+	g.loopStack = g.loopStack[:len(g.loopStack)-1]
+}
+
+func (g *funcGen) currentLoop() (loopLabels, bool) {
+	if len(g.loopStack) == 0 {
+		return loopLabels{}, false
+	}
+	return g.loopStack[len(g.loopStack)-1], true
 }

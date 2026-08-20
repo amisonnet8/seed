@@ -3,10 +3,10 @@
 // The grammar implemented here is intentionally a subset of seed_spec.md:
 // top-level func/var declarations, a block of statements limited to
 // variable declarations, assignment (scalar, compound, ++/--), call
-// expressions, and return, plus a full operator-precedence expression
-// grammar (§5), literals, and variable references. Later development
-// steps extend this grammar further (control flow, arrays) one feature
-// at a time.
+// expressions, return, if/elif/else, while, break/continue, plus a full
+// operator-precedence expression grammar (§5), literals, and variable
+// references. Later development steps extend this grammar further
+// (arrays, for-in, general functions) one feature at a time.
 package parser
 
 import (
@@ -200,6 +200,16 @@ func (p *parser) parseStmt() (ast.Stmt, error) {
 	switch {
 	case p.cur().Kind == lexer.KwReturn:
 		return p.parseReturnStmt()
+	case p.cur().Kind == lexer.KwIf:
+		return p.parseIfStmt()
+	case p.cur().Kind == lexer.KwWhile:
+		return p.parseWhileStmt()
+	case p.cur().Kind == lexer.KwBreak:
+		tok := p.advance()
+		return &ast.BreakStmt{Line: tok.Line}, nil
+	case p.cur().Kind == lexer.KwContinue:
+		tok := p.advance()
+		return &ast.ContinueStmt{Line: tok.Line}, nil
 	case p.isTypeKeyword():
 		return p.parseVarDecl()
 	case p.cur().Kind == lexer.Ident:
@@ -207,6 +217,67 @@ func (p *parser) parseStmt() (ast.Stmt, error) {
 	default:
 		return nil, fmt.Errorf("line %d: unexpected token %q", p.cur().Line, p.cur().Literal)
 	}
+}
+
+// parseIfStmt parses an if/elif/else chain. `elif`/`else` must follow the
+// previous block's closing '}' on the same line (no newline in between):
+// a newline there ends the if-statement, same as any other statement, so
+// a lone `elif`/`else` on its own line is correctly a syntax error rather
+// than silently chaining.
+func (p *parser) parseIfStmt() (ast.Stmt, error) {
+	kw := p.advance() // 'if'
+	stmt := &ast.IfStmt{Line: kw.Line}
+
+	clause, err := p.parseIfClause()
+	if err != nil {
+		return nil, err
+	}
+	stmt.Clauses = append(stmt.Clauses, clause)
+
+	for p.cur().Kind == lexer.KwElif {
+		p.advance()
+		clause, err := p.parseIfClause()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Clauses = append(stmt.Clauses, clause)
+	}
+
+	if p.cur().Kind == lexer.KwElse {
+		p.advance()
+		body, err := p.parseBlock()
+		if err != nil {
+			return nil, err
+		}
+		stmt.Else = body
+	}
+
+	return stmt, nil
+}
+
+func (p *parser) parseIfClause() (ast.IfClause, error) {
+	cond, err := p.parseExpr()
+	if err != nil {
+		return ast.IfClause{}, err
+	}
+	body, err := p.parseBlock()
+	if err != nil {
+		return ast.IfClause{}, err
+	}
+	return ast.IfClause{Cond: cond, Body: body}, nil
+}
+
+func (p *parser) parseWhileStmt() (ast.Stmt, error) {
+	kw := p.advance() // 'while'
+	cond, err := p.parseExpr()
+	if err != nil {
+		return nil, err
+	}
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.WhileStmt{Cond: cond, Body: body, Line: kw.Line}, nil
 }
 
 func (p *parser) parseVarDecl() (*ast.VarDecl, error) {

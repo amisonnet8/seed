@@ -15,9 +15,9 @@ import (
 // Supported so far: exactly one function named main with the fixed
 // entry-point signature from seed_spec.md §7, global and local variable
 // declarations/assignment with null semantics, the full operator set
-// (§5) including compound assignment and ++/--, and print/isnull calls.
-// General user-defined functions, control flow, and arrays are not
-// supported yet.
+// (§5) including compound assignment and ++/--, print/isnull calls, and
+// if/elif/else, while, break/continue (§6). General user-defined
+// functions, for-in, and arrays are not supported yet.
 func Check(f *ast.File) error {
 	global := newScope(nil)
 	for _, g := range f.Globals {
@@ -48,22 +48,30 @@ func Check(f *ast.File) error {
 	}
 
 	body := newScope(global)
-	return checkBlock(body, main.Body, *main.ReturnType)
+	if err := checkBlock(body, main.Body, *main.ReturnType, 0); err != nil {
+		return err
+	}
+	if !alwaysReturns(main.Body) {
+		return fmt.Errorf("line %d: main does not return a value on every path", main.Line)
+	}
+	return nil
 }
 
 // checkBlock validates each statement of a block in order, using scope
 // for name resolution/declaration. retType is the enclosing function's
-// return type, needed to check `return` expressions.
-func checkBlock(scope *scope, stmts []ast.Stmt, retType ast.Type) error {
+// return type, needed to check `return` expressions; loopDepth is how
+// many enclosing while loops this block is nested in, needed to check
+// break/continue.
+func checkBlock(scope *scope, stmts []ast.Stmt, retType ast.Type, loopDepth int) error {
 	for _, stmt := range stmts {
-		if err := checkStmt(scope, stmt, retType); err != nil {
+		if err := checkStmt(scope, stmt, retType, loopDepth); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func checkStmt(scope *scope, stmt ast.Stmt, retType ast.Type) error {
+func checkStmt(scope *scope, stmt ast.Stmt, retType ast.Type, loopDepth int) error {
 	switch s := stmt.(type) {
 	case *ast.VarDecl:
 		return checkVarDecl(scope, s)
@@ -78,9 +86,100 @@ func checkStmt(scope *scope, stmt ast.Stmt, retType ast.Type) error {
 		return err
 	case *ast.ReturnStmt:
 		return checkReturnStmt(scope, s, retType)
+	case *ast.IfStmt:
+		return checkIfStmt(scope, s, retType, loopDepth)
+	case *ast.WhileStmt:
+		return checkWhileStmt(scope, s, retType, loopDepth)
+	case *ast.BreakStmt:
+		if loopDepth == 0 {
+			return fmt.Errorf("line %d: break outside of a loop", s.Line)
+		}
+		return nil
+	case *ast.ContinueStmt:
+		if loopDepth == 0 {
+			return fmt.Errorf("line %d: continue outside of a loop", s.Line)
+		}
+		return nil
 	default:
 		return fmt.Errorf("sema: unsupported statement %T", stmt)
 	}
+}
+
+// checkIfStmt checks an if/elif/else chain: every condition must be Bool,
+// and each clause/else body gets its own child scope (seed_spec.md §3 —
+// a fresh block scope per `{ }`, allowing shadowing).
+func checkIfStmt(scope *scope, stmt *ast.IfStmt, retType ast.Type, loopDepth int) error {
+	for _, clause := range stmt.Clauses {
+		if err := checkCondition(scope, clause.Cond); err != nil {
+			return err
+		}
+		if err := checkBlock(newScope(scope), clause.Body, retType, loopDepth); err != nil {
+			return err
+		}
+	}
+	if stmt.Else != nil {
+		if err := checkBlock(newScope(scope), stmt.Else, retType, loopDepth); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkWhileStmt checks a while loop: the condition must be Bool, and the
+// body is checked with loopDepth+1 so break/continue are valid there.
+func checkWhileStmt(scope *scope, stmt *ast.WhileStmt, retType ast.Type, loopDepth int) error {
+	if err := checkCondition(scope, stmt.Cond); err != nil {
+		return err
+	}
+	return checkBlock(newScope(scope), stmt.Body, retType, loopDepth+1)
+}
+
+// checkCondition validates that cond is a non-null Bool expression, as
+// required by if/elif/while.
+func checkCondition(scope *scope, cond ast.Expr) error {
+	if _, ok := cond.(*ast.NullLit); ok {
+		return fmt.Errorf("line %d: null cannot be used here", ast.ExprLine(cond))
+	}
+	t, err := inferType(scope, cond)
+	if err != nil {
+		return err
+	}
+	if t != (ast.Type{Name: "Bool"}) {
+		return fmt.Errorf("line %d: condition must be Bool, got %s", ast.ExprLine(cond), t.Name)
+	}
+	return nil
+}
+
+// alwaysReturns conservatively reports whether executing stmts is
+// guaranteed to hit a `return` on every path. An if/elif/.../else chain
+// counts only when every one of its branches (including a mandatory
+// else) always returns; a while loop never counts, since its condition
+// might be false immediately and Seed has no literal-true fast path for
+// this analysis to recognize. This mirrors (a deliberately simpler
+// version of) Go's own "missing return" check, run here so a
+// non-exhaustive main is a Seed-level error instead of surfacing as a
+// go/types failure from the generated code.
+func alwaysReturns(stmts []ast.Stmt) bool {
+	for _, s := range stmts {
+		switch st := s.(type) {
+		case *ast.ReturnStmt:
+			return true
+		case *ast.IfStmt:
+			if st.Else == nil {
+				continue
+			}
+			exhaustive := alwaysReturns(st.Else)
+			for _, clause := range st.Clauses {
+				if !alwaysReturns(clause.Body) {
+					exhaustive = false
+				}
+			}
+			if exhaustive {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func checkVarDecl(scope *scope, decl *ast.VarDecl) error {

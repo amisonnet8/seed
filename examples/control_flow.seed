@@ -1,0 +1,43 @@
+func Int main(String[] args) {
+    Int n = 5
+
+    // while: build a run of n stars
+    String stars = ""
+    Int i = 0
+    while i < n {
+        stars += "*"
+        i++
+    }
+    print(stars)
+
+    // if / elif / else
+    if n == 5 {
+        print("n is five")
+    } elif n == 10 {
+        print("n is ten")
+    } else {
+        print("n is something else")
+    }
+
+    // break / continue: collect stars for odd counters only, stop after 2
+    String odds = ""
+    Int j = 0
+    Int collected = 0
+    while true {
+        j++
+        if j > n {
+            break
+        }
+        if j % 2 == 0 {
+            continue
+        }
+        odds += "*"
+        collected++
+        if collected >= 2 {
+            break
+        }
+    }
+    print(odds)
+
+    return 0
+}

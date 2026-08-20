@@ -279,3 +279,170 @@ func Int main(String[] args) {
 		t.Fatalf("expected global initializers to reject variable references, got %v", err)
 	}
 }
+
+func TestControlFlowValidProgram(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int i = 0
+    while i < 10 {
+        if i == 3 {
+            i += 2
+            continue
+        }
+        if i == 8 {
+            break
+        }
+        i++
+    }
+    if i == 3 {
+        return 1
+    } elif i == 8 {
+        return 2
+    } else {
+        return 3
+    }
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestIfConditionMustBeBool(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int x = 1
+    if x {
+        return 0
+    }
+    return 1
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "condition must be Bool") {
+		t.Fatalf("expected an if-condition type error, got %v", err)
+	}
+}
+
+func TestWhileConditionMustBeBool(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int x = 1
+    while x {
+        return 0
+    }
+    return 1
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "condition must be Bool") {
+		t.Fatalf("expected a while-condition type error, got %v", err)
+	}
+}
+
+func TestBreakOutsideLoop(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    break
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "break outside of a loop") {
+		t.Fatalf("expected a break-outside-loop error, got %v", err)
+	}
+}
+
+func TestContinueOutsideLoop(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    if true {
+        continue
+    }
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "continue outside of a loop") {
+		t.Fatalf("expected a continue-outside-loop error (if is not a loop), got %v", err)
+	}
+}
+
+func TestMainMustReturnOnEveryPath(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    if true {
+        return 1
+    }
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "does not return a value on every path") {
+		t.Fatalf("expected a non-exhaustive-return error (if with no else), got %v", err)
+	}
+}
+
+func TestMainReturnsOnEveryPathViaExhaustiveIfElse(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Bool cond = true
+    if cond {
+        return 1
+    } elif !cond {
+        return 2
+    } else {
+        return 3
+    }
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWhileLoopNeverCountsAsExhaustiveReturn(t *testing.T) {
+	// The condition might be false on the first check, so a return only
+	// inside the loop body never guarantees a return.
+	src := `
+func Int main(String[] args) {
+    while true {
+        return 1
+    }
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "does not return a value on every path") {
+		t.Fatalf("expected a non-exhaustive-return error (while is never exhaustive), got %v", err)
+	}
+}
+
+func TestShadowingInsideIfBodyAllowed(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int x = 1
+    if true {
+        Int x = 2
+    }
+    return x
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("shadowing inside a nested block should be allowed, got %v", err)
+	}
+}
+
+func TestDuplicateDeclarationInsideIfBodyStillRejected(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    if true {
+        Int x = 1
+        Int x = 2
+    }
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "already declared") {
+		t.Fatalf("expected a duplicate-declaration error within the if body, got %v", err)
+	}
+}
