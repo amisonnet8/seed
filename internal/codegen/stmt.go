@@ -41,6 +41,8 @@ func genStmt(g *funcGen, s ast.Stmt) error {
 		return genIfStmt(g, st)
 	case *ast.WhileStmt:
 		return genWhileStmt(g, st)
+	case *ast.ForInStmt:
+		return genForInStmt(g, st)
 	case *ast.BreakStmt:
 		return genBreakStmt(g, st)
 	case *ast.ContinueStmt:
@@ -142,6 +144,83 @@ func genWhileStmt(g *funcGen, stmt *ast.WhileStmt) error {
 	return nil
 }
 
+// genForInStmt compiles `for x in a { ... }` (seed_spec.md §6) as an
+// index-counted loop over len(a):
+//
+//	CALL lenOp : ?len a; SET idxOp 0
+//	LABEL start; LT cmp idxOp lenOp; IF cmp body; GOTO end
+//	LABEL body; AGET x a idxOp; SET x_isset true; ...; LABEL continue
+//	ADD idxOp idxOp 1; GOTO start
+//	LABEL end
+//
+// Unlike genWhileStmt, `continue` cannot target start directly: start
+// only re-checks the condition, and skipping straight to it would skip
+// the idxOp++ step, looping forever on the same element. So continue
+// targets a dedicated label positioned right before that increment,
+// which the body's normal (non-break/continue) fallthrough also reaches.
+//
+// x's scope spans the loop var and the body together in a single funcCtx
+// scope (matching sema's checkForInStmt), not genBlock's usual per-block
+// scope, so it's pushed/popped by hand around an inline statement loop
+// instead of calling genBlock.
+func genForInStmt(g *funcGen, stmt *ast.ForInStmt) error {
+	arrRef, ok := g.ctx.lookup(stmt.ArrayName)
+	if !ok {
+		return fmt.Errorf("line %d: undefined variable %q", stmt.Line, stmt.ArrayName)
+	}
+	elemType := ast.Type{Name: arrRef.Type.Name}
+	elemIRType, err := seedTypeToIR(elemType)
+	if err != nil {
+		return err
+	}
+
+	lenOp := g.newTemp("^int")
+	g.emit("\tCALL\t%s\t:\t?len\t%s\n", lenOp, arrRef.ValOp)
+	idxOp := g.newTemp("^int")
+	g.emit("\tSET\t%s\t0\n", idxOp)
+
+	startLabel := g.newLabel()
+	bodyLabel := g.newLabel()
+	continueLabel := g.newLabel()
+	endLabel := g.newLabel()
+
+	g.emit("\tLABEL\t#%s\n", startLabel)
+	cmp := g.newTemp("^bool")
+	g.emit("\tLT\t%s\t%s\t%s\n", cmp, idxOp, lenOp)
+	g.emit("\tIF\t%s\t#%s\n", cmp, bodyLabel)
+	g.emit("\tGOTO\t#%s\n", endLabel)
+	g.emit("\tLABEL\t#%s\n", bodyLabel)
+
+	g.ctx.push()
+	loopVar, err := g.ctx.declare(stmt.VarName, elemType)
+	if err != nil {
+		g.ctx.pop()
+		return fmt.Errorf("line %d: %s", stmt.Line, err)
+	}
+	g.declareVar(loopVar.ValOp, elemIRType)
+	g.declareVar(loopVar.SetOp, "^bool")
+	g.emit("\tAGET\t%s\t%s\t%s\n", loopVar.ValOp, arrRef.ValOp, idxOp)
+	g.emit("\tSET\t%s\ttrue\n", loopVar.SetOp)
+
+	g.pushLoop(continueLabel, endLabel)
+	for _, bodyStmt := range stmt.Body {
+		if err := genStmt(g, bodyStmt); err != nil {
+			g.popLoop()
+			g.ctx.pop()
+			return err
+		}
+	}
+	g.popLoop()
+	g.ctx.pop()
+
+	g.emit("\tGOTO\t#%s\n", continueLabel)
+	g.emit("\tLABEL\t#%s\n", continueLabel)
+	g.emit("\tADD\t%s\t%s\t1\n", idxOp, idxOp)
+	g.emit("\tGOTO\t#%s\n", startLabel)
+	g.emit("\tLABEL\t#%s\n", endLabel)
+	return nil
+}
+
 func genBreakStmt(g *funcGen, stmt *ast.BreakStmt) error {
 	loop, ok := g.currentLoop()
 	if !ok {
@@ -168,7 +247,18 @@ func genContinueStmt(g *funcGen, stmt *ast.ContinueStmt) error {
 // iterations: the hoisted VAR only zero-allocates once, at function
 // entry, so without an explicit reset here a later iteration would see
 // whatever the previous iteration left behind instead of a fresh null.
+// Array declarations dispatch to genArrayVarDecl instead, which needs no
+// such reset of its own: its SLMAKE already reassigns the variable to a
+// fresh backing array on every run.
 func genVarDecl(g *funcGen, decl *ast.VarDecl) error {
+	if decl.Type.IsArray {
+		ref, err := g.ctx.declare(decl.Name, decl.Type)
+		if err != nil {
+			return fmt.Errorf("line %d: %w", decl.Line, err)
+		}
+		return genArrayVarDecl(g, decl, ref)
+	}
+
 	irType, err := seedTypeToIR(decl.Type)
 	if err != nil {
 		return err
@@ -187,10 +277,19 @@ func genVarDecl(g *funcGen, decl *ast.VarDecl) error {
 	return genAssign(g, ref, init)
 }
 
+// genAssignStmt compiles `name = value` (scalar or whole-array) and
+// `name[Index] = value` (a single array element), dispatching to the
+// array-specific helpers in array.go as needed.
 func genAssignStmt(g *funcGen, stmt *ast.AssignStmt) error {
 	ref, ok := g.ctx.lookup(stmt.Name)
 	if !ok {
 		return fmt.Errorf("line %d: undefined variable %q", stmt.Line, stmt.Name)
+	}
+	if stmt.Index != nil {
+		return genIndexAssign(g, ref, stmt.Index, stmt.Value)
+	}
+	if ref.Type.IsArray {
+		return genArrayReassign(g, ref, stmt.Value)
 	}
 	return genAssign(g, ref, stmt.Value)
 }

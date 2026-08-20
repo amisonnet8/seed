@@ -8,11 +8,15 @@ type File struct {
 }
 
 // Type is a Seed type reference: one of Int/Float/String/Bool/File,
-// optionally as a slice-form array (Type[], seed_spec.md §7 — array
-// parameters and return values are written without a size).
+// optionally as an array (seed_spec.md §3 for a sized local/global
+// declaration like `Int[100]`, or §7 for the unsized `Type[]` form used
+// only in function parameter/return types). The declared size (if any)
+// lives on VarDecl, not here: seed_spec.md §4's truncate/pad assignment
+// rule means an array's element count is a runtime property, not part of
+// its static type, so two array types are compatible regardless of size.
 type Type struct {
 	Name    string
-	IsSlice bool
+	IsArray bool
 }
 
 // Param is a single function parameter.
@@ -36,21 +40,28 @@ type Stmt interface{ stmtNode() }
 
 // VarDecl is a variable declaration (seed_spec.md §3): `Type name` or
 // `Type name = Init`. Init is nil when there is no initializer, in which
-// case the variable starts out null. Used both as a top-level (global)
+// case the variable starts out null (scalar) or zero-valued (array). Size
+// is non-nil exactly when Type.IsArray is true — a local/global array
+// declaration always carries an explicit size expression (`Int[100]` or
+// `Int[size]`; the unsized `Int[]` form is only valid for a function
+// parameter/return type, not here). Used both as a top-level (global)
 // declaration and as a statement inside a function body.
 type VarDecl struct {
 	Type Type
 	Name string
+	Size Expr
 	Init Expr
 	Line int
 }
 
 func (*VarDecl) stmtNode() {}
 
-// AssignStmt is a scalar assignment (seed_spec.md §4): `name = Value`.
-// Array-element assignment is not represented here yet.
+// AssignStmt is an assignment (seed_spec.md §4): `name = Value` for a
+// scalar or whole-array reassignment, or `name[Index] = Value` for a
+// single array element when Index is non-nil.
 type AssignStmt struct {
 	Name  string
+	Index Expr // nil for `name = value`; non-nil for `name[Index] = value`
 	Value Expr
 	Line  int
 }
@@ -121,6 +132,18 @@ type WhileStmt struct {
 
 func (*WhileStmt) stmtNode() {}
 
+// ForInStmt is a `for x in a` loop (seed_spec.md §6): VarName takes each
+// element of the array named ArrayName in turn (not its index). VarName's
+// scope is the whole statement, same as any other block.
+type ForInStmt struct {
+	VarName   string
+	ArrayName string
+	Body      []Stmt
+	Line      int
+}
+
+func (*ForInStmt) stmtNode() {}
+
 // BreakStmt exits the innermost enclosing loop.
 type BreakStmt struct {
 	Line int
@@ -145,6 +168,15 @@ type Ident struct {
 }
 
 func (*Ident) exprNode() {}
+
+// IndexExpr is an array element reference, e.g. `a[i]` (seed_spec.md §4).
+type IndexExpr struct {
+	Name  string
+	Index Expr
+	Line  int
+}
+
+func (*IndexExpr) exprNode() {}
 
 // UnaryExpr is a prefix unary operator: `!x` or `-x`. ResultType is
 // filled in by sema.Check; codegen relies on it to pick the right
@@ -210,6 +242,18 @@ type NullLit struct {
 
 func (*NullLit) exprNode() {}
 
+// ArrayLit is an array literal, e.g. `{1, 2, 3}` (seed_spec.md §2). Its
+// element type is determined entirely by the assignment context (a
+// VarDecl's declared type or an AssignStmt's target), not by the literal
+// itself — so, unlike every other Expr, it is only ever type-checked via
+// sema's checkArrayLiteral, never through the general inferType path.
+type ArrayLit struct {
+	Elems []Expr
+	Line  int
+}
+
+func (*ArrayLit) exprNode() {}
+
 // CallExpr is a function call, e.g. print("hello").
 type CallExpr struct {
 	Callee string
@@ -224,6 +268,8 @@ func ExprLine(e Expr) int {
 	switch v := e.(type) {
 	case *Ident:
 		return v.Line
+	case *IndexExpr:
+		return v.Line
 	case *StringLit:
 		return v.Line
 	case *IntLit:
@@ -233,6 +279,8 @@ func ExprLine(e Expr) int {
 	case *BoolLit:
 		return v.Line
 	case *NullLit:
+		return v.Line
+	case *ArrayLit:
 		return v.Line
 	case *CallExpr:
 		return v.Line
@@ -263,6 +311,8 @@ func StmtLine(s Stmt) int {
 	case *IfStmt:
 		return v.Line
 	case *WhileStmt:
+		return v.Line
+	case *ForInStmt:
 		return v.Line
 	case *BreakStmt:
 		return v.Line

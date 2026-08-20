@@ -25,6 +25,8 @@ func inferType(scope *scope, e ast.Expr) (ast.Type, error) {
 			return ast.Type{}, fmt.Errorf("line %d: undefined variable %q", v.Line, v.Name)
 		}
 		return typ, nil
+	case *ast.IndexExpr:
+		return inferIndexType(scope, v)
 	case *ast.CallExpr:
 		return inferCallType(scope, v)
 	case *ast.UnaryExpr:
@@ -38,12 +40,45 @@ func inferType(scope *scope, e ast.Expr) (ast.Type, error) {
 	}
 }
 
-// operandType infers e's type, rejecting `null` (no operator accepts it).
+// inferIndexType checks `a[Index]` (seed_spec.md §4): a must be an
+// array, and Index a non-null Int. The result is a's scalar element
+// type.
+func inferIndexType(scope *scope, idx *ast.IndexExpr) (ast.Type, error) {
+	arrType, ok := scope.lookup(idx.Name)
+	if !ok {
+		return ast.Type{}, fmt.Errorf("line %d: undefined variable %q", idx.Line, idx.Name)
+	}
+	if !arrType.IsArray {
+		return ast.Type{}, fmt.Errorf("line %d: %q is not an array", idx.Line, idx.Name)
+	}
+	if _, isNull := idx.Index.(*ast.NullLit); isNull {
+		return ast.Type{}, fmt.Errorf("line %d: null cannot be used here", idx.Line)
+	}
+	indexType, err := inferType(scope, idx.Index)
+	if err != nil {
+		return ast.Type{}, err
+	}
+	if indexType != (ast.Type{Name: "Int"}) {
+		return ast.Type{}, fmt.Errorf("line %d: array index must be Int, got %s", idx.Line, typeName(indexType))
+	}
+	return ast.Type{Name: arrType.Name}, nil
+}
+
+// operandType infers e's type for use as an operator's operand, rejecting
+// `null` (no operator accepts it) and arrays (seed_spec.md §5 defines no
+// array operators).
 func operandType(scope *scope, e ast.Expr) (ast.Type, error) {
 	if _, ok := e.(*ast.NullLit); ok {
 		return ast.Type{}, fmt.Errorf("line %d: null cannot be used here", ast.ExprLine(e))
 	}
-	return inferType(scope, e)
+	t, err := inferType(scope, e)
+	if err != nil {
+		return ast.Type{}, err
+	}
+	if t.IsArray {
+		return ast.Type{}, fmt.Errorf("line %d: operators are not supported for arrays", ast.ExprLine(e))
+	}
+	return t, nil
 }
 
 // inferUnaryType checks a prefix unary expression and records its result
@@ -175,7 +210,7 @@ func inferCallType(scope *scope, call *ast.CallExpr) (ast.Type, error) {
 			return ast.Type{}, err
 		}
 		if argType != (ast.Type{Name: "String"}) {
-			return ast.Type{}, fmt.Errorf("line %d: print expects a String argument, got %s", call.Line, argType.Name)
+			return ast.Type{}, fmt.Errorf("line %d: print expects a String argument, got %s", call.Line, typeName(argType))
 		}
 		return ast.Type{}, nil
 
@@ -187,8 +222,12 @@ func inferCallType(scope *scope, call *ast.CallExpr) (ast.Type, error) {
 		if !ok {
 			return ast.Type{}, fmt.Errorf("line %d: isnull expects a variable", call.Line)
 		}
-		if _, ok := scope.lookup(ident.Name); !ok {
+		typ, ok := scope.lookup(ident.Name)
+		if !ok {
 			return ast.Type{}, fmt.Errorf("line %d: undefined variable %q", ident.Line, ident.Name)
+		}
+		if typ.IsArray {
+			return ast.Type{}, fmt.Errorf("line %d: isnull does not support arrays", call.Line)
 		}
 		return ast.Type{Name: "Bool"}, nil
 

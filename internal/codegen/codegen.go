@@ -1,7 +1,6 @@
 // Package codegen translates a type-checked Seed AST into AMIVM-IR.
 //
-// Two design decisions worth knowing before reading the rest of this
-// package:
+// Design decisions worth knowing before reading the rest of this package:
 //
 //   - Seed's `main` cannot be emitted as amivm's `!main` directly: Go
 //     requires literal `func main()` to take no arguments and return
@@ -16,13 +15,14 @@
 //
 //   - Seed's null/base-value semantics (seed_spec.md §0) are represented
 //     as a value variable plus a companion "isset" bool variable per
-//     Seed variable (see scope.go's varRef). An ordinary read of the
-//     value variable already behaves correctly with no extra check:
+//     Seed scalar variable (see scope.go's varRef). An ordinary read of
+//     the value variable already behaves correctly with no extra check:
 //     Go's zero value for int/float64/string/bool/*os.File happens to be
 //     exactly Seed's base value for Int/Float/String/Bool/File. Only
 //     isnull() needs the isset flag; a null assignment additionally
 //     resets the value to its zero form so a later plain read still sees
-//     the base value.
+//     the base value. Arrays don't get an isset companion at all — see
+//     array.go's doc for why.
 //
 // A third, added in Step 4 (see stmt.go's genIfStmt/genWhileStmt):
 // AMIVM-IR has no structured control-flow instructions, only LABEL/GOTO
@@ -30,7 +30,7 @@
 // Seed block (`{ }`) also gets its own funcCtx scope via genBlock, even
 // though the resulting Go variables all still live in one flat function
 // namespace (see scope.go) — this is what makes shadowing inside an
-// if/while body safe.
+// if/while/for-in body safe.
 //
 // A fourth, forced by the third: since every Seed variable (and every
 // expression temp) ends up as a flat `var` in one Go function body with
@@ -50,6 +50,7 @@ package codegen
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -64,8 +65,6 @@ import (
 // reservation once general FuncDecls are compiled).
 const seedMainFunc = "seed_main"
 
-const stringSliceType = "^Stringslice"
-
 // Generate translates f (already validated by sema.Check) into AMIVM-IR text.
 func Generate(f *ast.File) (string, error) {
 	var main *ast.FuncDecl
@@ -78,25 +77,44 @@ func Generate(f *ast.File) (string, error) {
 		return "", fmt.Errorf("codegen: no main function (run sema.Check first)")
 	}
 
-	var b strings.Builder
-	fmt.Fprintf(&b, "SLTYPE\t%s\t^string\n", stringSliceType)
+	// "String" is always needed for main's String[] args parameter, even
+	// if the program itself never declares a String array.
+	slices := &sliceRegistry{used: map[string]bool{"String": true}}
 
+	// initGen accumulates every global's runtime initialization (SET,
+	// or SLMAKE+ASET for an array) in declaration order; its body and
+	// hoisted temps both end up inside the generated !main, before the
+	// call to !seed_main. globalDecls instead holds the GVAR lines
+	// themselves, which — like SLTYPE — are top-level and precede every
+	// FUNC.
 	globals := map[string]varRef{}
-	var globalDecls, globalInit strings.Builder
-	for _, g := range f.Globals {
-		ref, err := genGlobalVarDecl(&globalDecls, &globalInit, g)
+	var globalDecls strings.Builder
+	initGen := &funcGen{ctx: newFuncCtx(nil), slices: slices}
+	for _, gdecl := range f.Globals {
+		ref, err := genGlobalVarDecl(initGen, &globalDecls, gdecl)
 		if err != nil {
 			return "", err
 		}
-		globals[g.Name] = ref
+		globals[gdecl.Name] = ref
 	}
-	b.WriteString(globalDecls.String())
 
-	fmt.Fprintf(&b, "FUNC\t!%s\t%s\t:\t^int\n", seedMainFunc, stringSliceType)
-	g := &funcGen{ctx: newFuncCtx(globals)}
+	g := &funcGen{ctx: newFuncCtx(globals), slices: slices}
 	if err := genBlock(g, main.Body); err != nil {
 		return "", err
 	}
+
+	var b strings.Builder
+	for _, name := range slices.sorted() {
+		elemIRType, err := seedTypeToIR(ast.Type{Name: name})
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&b, "SLTYPE\t%s\t%s\n", sliceTypeToken(name), elemIRType)
+	}
+
+	b.WriteString(globalDecls.String())
+
+	fmt.Fprintf(&b, "FUNC\t!%s\t%s\t:\t^int\n", seedMainFunc, sliceTypeToken("String"))
 	for _, d := range g.decls {
 		fmt.Fprintf(&b, "\tVAR\t%s\t%s\n", d.Op, d.IRType)
 	}
@@ -104,8 +122,11 @@ func Generate(f *ast.File) (string, error) {
 	b.WriteString("ENDFUNC\n")
 
 	b.WriteString("FUNC\t!main\t:\n")
-	b.WriteString(globalInit.String())
 	b.WriteString("\tVAR\t%exitcode\t^int\n")
+	for _, d := range initGen.decls {
+		fmt.Fprintf(&b, "\tVAR\t%s\t%s\n", d.Op, d.IRType)
+	}
+	b.WriteString(initGen.b.String())
 	fmt.Fprintf(&b, "\tCALL\t%%exitcode\t:\t!%s\t@os.Args\n", seedMainFunc)
 	b.WriteString("\tCALL\t:\t?os.Exit\t%exitcode\n")
 	b.WriteString("\tRET\n")
@@ -114,11 +135,51 @@ func Generate(f *ast.File) (string, error) {
 	return b.String(), nil
 }
 
-// genGlobalVarDecl emits `decl`'s GVAR declarations into decls, and (if it
-// has a non-null initializer) the SET statements that assign its initial
-// value into init — those run inside the generated !main wrapper, since
-// GVAR itself has no initializer syntax.
-func genGlobalVarDecl(decls, init *strings.Builder, decl *ast.VarDecl) (varRef, error) {
+// sliceRegistry tracks which element types need a top-level SLTYPE
+// declaration for their array/slice form (see sliceTypeToken). It's
+// shared by every funcGen used within one Generate() call — including
+// the throwaway one genGlobalVarDecl uses to evaluate literal
+// initializers — since SLTYPE declarations are emitted once, up front,
+// for the whole program.
+type sliceRegistry struct {
+	used map[string]bool
+}
+
+func (r *sliceRegistry) use(elemName string) string {
+	r.used[elemName] = true
+	return sliceTypeToken(elemName)
+}
+
+func (r *sliceRegistry) sorted() []string {
+	names := make([]string, 0, len(r.used))
+	for name := range r.used {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// sliceTypeToken is the AMIVM-IR type name for elemName's array/slice
+// form, e.g. "Int" -> "^Intslice". Seed arrays compile to Go slices
+// (SLTYPE+SLMAKE), not Go's fixed-size array type: a declared size like
+// `Int[n]` can be a runtime variable, but Go's `[N]T` array type requires
+// a compile-time constant N, so only a slice can represent every
+// declaration seed_spec.md §3 allows. "Fixed-length" is still enforced —
+// just by Seed never generating a resize, not by the Go type itself.
+func sliceTypeToken(elemName string) string {
+	return "^" + elemName + "slice"
+}
+
+// genGlobalVarDecl emits `decl`'s GVAR declaration(s) into decls, and (if
+// it has a non-null initializer) the instructions that assign its
+// initial value into g's body — g is the shared init funcGen whose body
+// and hoisted temps end up inside the generated !main wrapper, since
+// GVAR itself has no initializer syntax (see Generate's doc comment).
+func genGlobalVarDecl(g *funcGen, decls *strings.Builder, decl *ast.VarDecl) (varRef, error) {
+	if decl.Type.IsArray {
+		return genGlobalArrayVarDecl(g, decls, decl)
+	}
+
 	irType, err := seedTypeToIR(decl.Type)
 	if err != nil {
 		return varRef{}, err
@@ -133,22 +194,23 @@ func genGlobalVarDecl(decls, init *strings.Builder, decl *ast.VarDecl) (varRef, 
 	if _, isNull := decl.Init.(*ast.NullLit); isNull {
 		return ref, nil
 	}
-	// Global initializers are restricted (by sema, once it enforces this)
-	// to literals, so no temp variables/instructions are ever needed here.
-	v, err := genValue(&funcGen{ctx: newFuncCtx(nil)}, decl.Init)
+	// Global scalar initializers are restricted by sema to literals, but
+	// e.g. `Float f = -1.5` is still a UnaryExpr that needs a temp, so
+	// this goes through genValue/g like any other value, not a shortcut.
+	v, err := genValue(g, decl.Init)
 	if err != nil {
 		return varRef{}, err
 	}
-	fmt.Fprintf(init, "\tSET\t%s\t%s\n", ref.ValOp, v)
-	fmt.Fprintf(init, "\tSET\t%s\ttrue\n", ref.SetOp)
+	g.emit("\tSET\t%s\t%s\n", ref.ValOp, v)
+	g.emit("\tSET\t%s\ttrue\n", ref.SetOp)
 	return ref, nil
 }
 
-// seedTypeToIR maps a scalar Seed type to its AMIVM-IR type token. Array
-// types are not handled yet (Step 5).
+// seedTypeToIR maps a scalar Seed type to its AMIVM-IR type token. t must
+// not be an array — see sliceTypeToken for that.
 func seedTypeToIR(t ast.Type) (string, error) {
-	if t.IsSlice {
-		return "", fmt.Errorf("codegen: array types are not supported yet")
+	if t.IsArray {
+		return "", fmt.Errorf("codegen: seedTypeToIR called on an array type %q (use sliceTypeToken)", t.Name)
 	}
 	switch t.Name {
 	case "Int":
@@ -167,7 +229,8 @@ func seedTypeToIR(t ast.Type) (string, error) {
 }
 
 // zeroValueLiteral is the AMIVM-IR value token for t's Seed base value,
-// which happens to coincide with Go's zero value in every case.
+// which happens to coincide with Go's zero value in every case. t must
+// be scalar (see seedTypeToIR).
 func zeroValueLiteral(t ast.Type) (string, error) {
 	switch t.Name {
 	case "Int", "Float":
@@ -193,6 +256,7 @@ type funcGen struct {
 	decls     []varDecl
 	b         strings.Builder
 	ctx       *funcCtx
+	slices    *sliceRegistry
 	labelSeq  int
 	loopStack []loopLabels
 }
@@ -203,8 +267,11 @@ type varDecl struct {
 	IRType string
 }
 
-// loopLabels is the pair of labels a while loop pushes for break/continue
-// to target: Continue re-checks the loop condition, Break exits the loop.
+// loopLabels is the pair of labels a while/for-in loop pushes for
+// break/continue to target. For while, Continue re-checks the condition
+// directly; for-in instead points Continue at its index-increment step
+// (see stmt.go's genForInStmt) so `continue` doesn't skip advancing to
+// the next element.
 type loopLabels struct {
 	Continue string
 	Break    string

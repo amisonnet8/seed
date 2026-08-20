@@ -446,3 +446,232 @@ func Int main(String[] args) {
 		t.Fatalf("expected a duplicate-declaration error within the if body, got %v", err)
 	}
 }
+
+func TestArraysValidProgram(t *testing.T) {
+	src := `
+Int[3] globalCounts = {1, 2, 3}
+
+func Int main(String[] args) {
+    Int size = 5
+    Int[size] a
+    Int[3] b = {1, 2, 3}
+    b[0] = 10
+    b = {4, 5, 6}
+    b = null
+
+    globalCounts[1] = 99
+
+    for x in a {
+        Bool isZero = x == 0
+    }
+
+    Int i = 0
+    while i < 3 {
+        Int v = b[i]
+        i++
+    }
+
+    return 0
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestArraySizeMustBeInt(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    String s = "5"
+    Int[s] a
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "array size must be Int") {
+		t.Fatalf("expected an array-size type error, got %v", err)
+	}
+}
+
+func TestArrayLiteralElementTypeMismatch(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int[3] a = {1, "two", 3}
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "cannot use String as Int") {
+		t.Fatalf("expected an array-literal element type error, got %v", err)
+	}
+}
+
+func TestArrayLiteralElementCountNeedNotMatchDeclaredSize(t *testing.T) {
+	// seed_spec.md §4's truncate/pad rule: a literal shorter or longer
+	// than the declared size is fine at the type-check level.
+	src := `
+func Int main(String[] args) {
+    Int[5] a = {1, 2}
+    Int[1] b = {1, 2, 3}
+    return 0
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestArrayIndexMustBeInt(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int[3] a = {1, 2, 3}
+    Int x = a["0"]
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "array index must be Int") {
+		t.Fatalf("expected an array-index type error, got %v", err)
+	}
+}
+
+func TestIndexingNonArrayRejected(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int x = 5
+    Int y = x[0]
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "is not an array") {
+		t.Fatalf("expected a not-an-array error, got %v", err)
+	}
+}
+
+func TestIsnullRejectsArray(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int[3] a
+    Bool b = isnull(a)
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "isnull does not support arrays") {
+		t.Fatalf("expected isnull to reject an array, got %v", err)
+	}
+}
+
+func TestArrayOperatorsRejected(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int[3] a = {1, 2, 3}
+    Int[3] b = {4, 5, 6}
+    Bool eq = a == b
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "operators are not supported for arrays") {
+		t.Fatalf("expected == to reject arrays, got %v", err)
+	}
+}
+
+func TestWholeArrayReassignmentFromAnotherArrayRejected(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int[3] a = {1, 2, 3}
+    Int[3] b = {4, 5, 6}
+    a = b
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "array can only be reassigned with an array literal or null") {
+		t.Fatalf("expected array-to-array reassignment to be rejected, got %v", err)
+	}
+}
+
+func TestForInRequiresArray(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int x = 5
+    for v in x {
+        return 0
+    }
+    return 1
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "is not an array") {
+		t.Fatalf("expected for-in to require an array, got %v", err)
+	}
+}
+
+func TestForInLoopVarOutOfScopeAfterLoop(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int[3] a = {1, 2, 3}
+    for x in a {
+        x++
+    }
+    x++
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "undefined variable") {
+		t.Fatalf("expected the for-in variable to be out of scope after the loop, got %v", err)
+	}
+}
+
+func TestForInBreakContinueAllowed(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int[3] a = {1, 2, 3}
+    for x in a {
+        if x == 1 {
+            continue
+        }
+        if x == 2 {
+            break
+        }
+    }
+    return 0
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestForInNeverCountsAsExhaustiveReturn(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int[3] a = {1, 2, 3}
+    for x in a {
+        return 1
+    }
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "does not return a value on every path") {
+		t.Fatalf("expected for-in to never count as exhaustive (array could be empty), got %v", err)
+	}
+}
+
+func TestGlobalArraySizeMustBeLiteral(t *testing.T) {
+	src := `
+Int n = 3
+Int[n] globals
+
+func Int main(String[] args) {
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "global array's size must be an Int literal") {
+		t.Fatalf("expected a global array size restriction error, got %v", err)
+	}
+}

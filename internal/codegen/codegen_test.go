@@ -290,3 +290,153 @@ func Int main(String[] args) {
 		t.Errorf("expected break to add a GOTO to the end label %s (exit check + break), got %d in:\n%s", endLabel, got, ir)
 	}
 }
+
+func TestArrayDeclarationUsesSLMAKE(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    Int[5] a = {1, 2}
+    return 0
+}
+`)
+	if !strings.Contains(ir, "SLTYPE\t^Intslice\t^int") {
+		t.Errorf("expected an ^Intslice SLTYPE declaration, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "SLMAKE\t%a\t^Intslice\t5") {
+		t.Errorf("expected SLMAKE with the declared size, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "ASET\t%a\t0\t1") || !strings.Contains(ir, "ASET\t%a\t1\t2") {
+		t.Errorf("expected ASET for each literal element, got:\n%s", ir)
+	}
+	// No isset companion for arrays (see array.go's doc).
+	if strings.Contains(ir, "%a_isset") {
+		t.Errorf("expected no isset companion for an array, got:\n%s", ir)
+	}
+}
+
+func TestArrayLiteralElementGuardedByRuntimeBoundsCheck(t *testing.T) {
+	// Each literal element is guarded by its own IF/GOTO against the
+	// array's length, not just unconditionally ASET, since the declared
+	// size might be a runtime variable (see array.go's genArrayLitElements).
+	ir := generate(t, `
+func Int main(String[] args) {
+    Int[2] a = {1, 2, 3}
+    return 0
+}
+`)
+	if !strings.Contains(ir, "LT\t") {
+		t.Errorf("expected a runtime bounds check (LT) for each literal element, got:\n%s", ir)
+	}
+	// The 3rd element (index 2) is still emitted — the guard, not a
+	// compile-time-omitted instruction, is what makes it a no-op at
+	// runtime when the array is too short.
+	if !strings.Contains(ir, "ASET\t%a\t2\t3") {
+		t.Errorf("expected ASET for the truncated element too (guarded, not omitted), got:\n%s", ir)
+	}
+}
+
+func TestIndexAssignEmitsASET(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    Int[3] a = {1, 2, 3}
+    a[1] = 99
+    return 0
+}
+`)
+	if !strings.Contains(ir, "ASET\t%a\t1\t99") {
+		t.Errorf("expected ASET for element assignment, got:\n%s", ir)
+	}
+}
+
+func TestIndexValueEmitsAGET(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    Int[3] a = {1, 2, 3}
+    Int x = a[1]
+    return 0
+}
+`)
+	if !strings.Contains(ir, "AGET\t") || !strings.Contains(ir, "\t%a\t") {
+		t.Errorf("expected AGET reading from %%a, got:\n%s", ir)
+	}
+}
+
+func TestWholeArrayReassignmentRebuildsFromLength(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    Int[3] a = {1, 2, 3}
+    a = {9}
+    return 0
+}
+`)
+	idx := strings.Index(ir, "CALL\t")
+	if idx == -1 || !strings.Contains(ir[idx:], "?len\t%a") {
+		t.Errorf("expected reassignment to query len(%%a), got:\n%s", ir)
+	}
+	if strings.Count(ir, "SLMAKE\t%a\t^Intslice\t") != 2 {
+		t.Errorf("expected two SLMAKEs (declaration + reassignment), got:\n%s", ir)
+	}
+}
+
+func TestForInUsesLenAndAGETPerIteration(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    Int[3] a = {1, 2, 3}
+    for x in a {
+        Int y = x
+    }
+    return 0
+}
+`)
+	if !strings.Contains(ir, "?len\t%a") {
+		t.Errorf("expected for-in to query len(%%a), got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "AGET\t%x\t%a\t") {
+		t.Errorf("expected for-in to AGET into the loop variable, got:\n%s", ir)
+	}
+}
+
+// TestForInContinueSkipsToIncrement locks in a real bug fix: `continue`
+// inside a for-in must not jump straight back to the condition check
+// (that's correct for while, but for-in has an implicit index++ between
+// iterations that continue must still run, or the loop never advances).
+func TestForInContinueSkipsToIncrement(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    Int[3] a = {1, 2, 3}
+    for x in a {
+        if x == 2 {
+            continue
+        }
+    }
+    return 0
+}
+`)
+	lines := strings.Split(ir, "\n")
+
+	// genForInStmt's shape: LABEL start; ...; IF cmp body; GOTO end;
+	// LABEL body; ...; LABEL continueLabel; ADD idx idx 1; GOTO start.
+	var startLabel, continueLabel string
+	for i, line := range lines {
+		if startLabel == "" && strings.HasPrefix(line, "\tLABEL\t#") {
+			startLabel = strings.TrimPrefix(line, "\tLABEL\t")
+		}
+		if strings.HasPrefix(line, "\tADD\t") && strings.Contains(line, "\t1") && i > 0 {
+			// the increment's own preceding LABEL is continueLabel
+			for j := i - 1; j >= 0; j-- {
+				if strings.HasPrefix(lines[j], "\tLABEL\t#") {
+					continueLabel = strings.TrimPrefix(lines[j], "\tLABEL\t")
+					break
+				}
+			}
+		}
+	}
+	if startLabel == "" || continueLabel == "" {
+		t.Fatalf("could not locate start/continue labels in:\n%s", ir)
+	}
+	if continueLabel == startLabel {
+		t.Fatalf("continue label must not be the condition-check label itself, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "\tGOTO\t"+continueLabel) {
+		t.Errorf("expected continue to GOTO the increment label %s, got:\n%s", continueLabel, ir)
+	}
+}

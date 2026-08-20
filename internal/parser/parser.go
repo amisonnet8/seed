@@ -1,12 +1,14 @@
 // Package parser builds an AST from Seed source code.
 //
 // The grammar implemented here is intentionally a subset of seed_spec.md:
-// top-level func/var declarations, a block of statements limited to
-// variable declarations, assignment (scalar, compound, ++/--), call
-// expressions, return, if/elif/else, while, break/continue, plus a full
-// operator-precedence expression grammar (§5), literals, and variable
-// references. Later development steps extend this grammar further
-// (arrays, for-in, general functions) one feature at a time.
+// top-level func/var declarations (including fixed-size arrays), a block
+// of statements limited to variable declarations, assignment (scalar,
+// array element, whole-array, compound, ++/--), call expressions, return,
+// if/elif/else, while, for-in, break/continue, plus a full
+// operator-precedence expression grammar (§5), literals (including array
+// literals), and variable/array-element references. Later development
+// steps extend this grammar further (general functions) one feature at a
+// time.
 package parser
 
 import (
@@ -105,7 +107,7 @@ func (p *parser) parseFuncDecl() (*ast.FuncDecl, error) {
 
 	if p.cur().Kind != lexer.Ident {
 		// A return type precedes the name: `func Int main(...)`.
-		rt, err := p.parseType()
+		rt, _, err := p.parseType(false)
 		if err != nil {
 			return nil, err
 		}
@@ -146,7 +148,7 @@ func (p *parser) parseFuncDecl() (*ast.FuncDecl, error) {
 }
 
 func (p *parser) parseParam() (ast.Param, error) {
-	typ, err := p.parseType()
+	typ, _, err := p.parseType(false)
 	if err != nil {
 		return ast.Param{}, err
 	}
@@ -157,22 +159,50 @@ func (p *parser) parseParam() (ast.Param, error) {
 	return ast.Param{Type: typ, Name: name.Literal}, nil
 }
 
-func (p *parser) parseType() (ast.Type, error) {
+// parseType parses a scalar or array type. requireArraySize distinguishes
+// the two array forms seed_spec.md uses: a variable declaration (§3)
+// always writes a size (`Int[100]`, `Int[size]`), while a function
+// parameter/return type (§7) always omits it (`Int[]`) — the "elements
+// aren't part of the signature, arrays are always passed by reference"
+// form isn't implemented until general functions land, but the grammar
+// already distinguishes the two so a size given in the wrong place is a
+// clear parse error rather than silently accepted. The returned Expr is
+// the parsed size, non-nil only for an array type when requireArraySize
+// is true.
+func (p *parser) parseType(requireArraySize bool) (ast.Type, ast.Expr, error) {
 	name, ok := typeKeywords[p.cur().Kind]
 	if !ok {
-		return ast.Type{}, fmt.Errorf("line %d: expected a type, got %q", p.cur().Line, p.cur().Literal)
+		return ast.Type{}, nil, fmt.Errorf("line %d: expected a type, got %q", p.cur().Line, p.cur().Literal)
 	}
 	p.advance()
 
 	t := ast.Type{Name: name}
-	if p.cur().Kind == lexer.LBracket {
-		p.advance()
-		if _, err := p.expect(lexer.RBracket, "']'"); err != nil {
-			return ast.Type{}, err
-		}
-		t.IsSlice = true
+	if p.cur().Kind != lexer.LBracket {
+		return t, nil, nil
 	}
-	return t, nil
+	lbracket := p.advance() // '['
+
+	if p.cur().Kind == lexer.RBracket {
+		p.advance()
+		if requireArraySize {
+			return ast.Type{}, nil, fmt.Errorf("line %d: array declarations require a size, e.g. %s[100] or %s[n]", lbracket.Line, name, name)
+		}
+		t.IsArray = true
+		return t, nil, nil
+	}
+
+	size, err := p.parseExpr()
+	if err != nil {
+		return ast.Type{}, nil, err
+	}
+	if _, err := p.expect(lexer.RBracket, "']'"); err != nil {
+		return ast.Type{}, nil, err
+	}
+	if !requireArraySize {
+		return ast.Type{}, nil, fmt.Errorf("line %d: a function parameter/return array type must not specify a size (write %s[])", lbracket.Line, name)
+	}
+	t.IsArray = true
+	return t, size, nil
 }
 
 func (p *parser) parseBlock() ([]ast.Stmt, error) {
@@ -204,6 +234,8 @@ func (p *parser) parseStmt() (ast.Stmt, error) {
 		return p.parseIfStmt()
 	case p.cur().Kind == lexer.KwWhile:
 		return p.parseWhileStmt()
+	case p.cur().Kind == lexer.KwFor:
+		return p.parseForInStmt()
 	case p.cur().Kind == lexer.KwBreak:
 		tok := p.advance()
 		return &ast.BreakStmt{Line: tok.Line}, nil
@@ -280,9 +312,29 @@ func (p *parser) parseWhileStmt() (ast.Stmt, error) {
 	return &ast.WhileStmt{Cond: cond, Body: body, Line: kw.Line}, nil
 }
 
+func (p *parser) parseForInStmt() (ast.Stmt, error) {
+	kw := p.advance() // 'for'
+	varName, err := p.expect(lexer.Ident, "loop variable name")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(lexer.KwIn, "'in'"); err != nil {
+		return nil, err
+	}
+	arrName, err := p.expect(lexer.Ident, "array variable name")
+	if err != nil {
+		return nil, err
+	}
+	body, err := p.parseBlock()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.ForInStmt{VarName: varName.Literal, ArrayName: arrName.Literal, Body: body, Line: kw.Line}, nil
+}
+
 func (p *parser) parseVarDecl() (*ast.VarDecl, error) {
 	line := p.cur().Line
-	typ, err := p.parseType()
+	typ, size, err := p.parseType(true)
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +342,7 @@ func (p *parser) parseVarDecl() (*ast.VarDecl, error) {
 	if err != nil {
 		return nil, err
 	}
-	decl := &ast.VarDecl{Type: typ, Name: name.Literal, Line: line}
+	decl := &ast.VarDecl{Type: typ, Name: name.Literal, Size: size, Line: line}
 	if p.cur().Kind == lexer.Assign {
 		p.advance()
 		init, err := p.parseExpr()
@@ -311,8 +363,9 @@ var compoundAssignOps = map[lexer.Kind]string{
 }
 
 // parseIdentStmt parses a statement starting with an identifier: a call
-// expression (`f(...)`), a scalar assignment (`name = value`), a compound
-// assignment (`name += value` etc.), or `name++`/`name--`.
+// expression (`f(...)`), a scalar or array-element assignment (`name =
+// value` / `name[index] = value`), a compound assignment (`name +=
+// value` etc.), or `name++`/`name--`.
 func (p *parser) parseIdentStmt() (ast.Stmt, error) {
 	name := p.advance() // Ident
 	switch {
@@ -322,6 +375,23 @@ func (p *parser) parseIdentStmt() (ast.Stmt, error) {
 			return nil, err
 		}
 		return &ast.ExprStmt{X: call, Line: call.Line}, nil
+	case p.cur().Kind == lexer.LBracket:
+		p.advance()
+		index, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(lexer.RBracket, "']'"); err != nil {
+			return nil, err
+		}
+		if _, err := p.expect(lexer.Assign, "'='"); err != nil {
+			return nil, err
+		}
+		val, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		return &ast.AssignStmt{Name: name.Literal, Index: index, Value: val, Line: name.Line}, nil
 	case p.cur().Kind == lexer.Assign:
 		p.advance()
 		val, err := p.parseExpr()
@@ -462,6 +532,8 @@ func (p *parser) parsePrimary() (ast.Expr, error) {
 			return nil, err
 		}
 		return x, nil
+	case lexer.LBrace:
+		return p.parseArrayLit()
 	case lexer.String:
 		p.advance()
 		return &ast.StringLit{Value: tok.Literal, Line: tok.Line}, nil
@@ -493,10 +565,44 @@ func (p *parser) parsePrimary() (ast.Expr, error) {
 		if p.cur().Kind == lexer.LParen {
 			return p.parseCallExprFrom(name)
 		}
+		if p.cur().Kind == lexer.LBracket {
+			p.advance()
+			index, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(lexer.RBracket, "']'"); err != nil {
+				return nil, err
+			}
+			return &ast.IndexExpr{Name: name.Literal, Index: index, Line: name.Line}, nil
+		}
 		return &ast.Ident{Name: name.Literal, Line: name.Line}, nil
 	default:
 		return nil, fmt.Errorf("line %d: unexpected token %q", tok.Line, tok.Literal)
 	}
+}
+
+// parseArrayLit parses an array literal, e.g. `{1, 2, 3}` (seed_spec.md
+// §2). Its element type isn't determined here — see ast.ArrayLit's doc.
+func (p *parser) parseArrayLit() (ast.Expr, error) {
+	kw := p.advance() // '{'
+	lit := &ast.ArrayLit{Line: kw.Line}
+	for p.cur().Kind != lexer.RBrace {
+		if len(lit.Elems) > 0 {
+			if _, err := p.expect(lexer.Comma, "','"); err != nil {
+				return nil, err
+			}
+		}
+		elem, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		lit.Elems = append(lit.Elems, elem)
+	}
+	if _, err := p.expect(lexer.RBrace, "'}'"); err != nil {
+		return nil, err
+	}
+	return lit, nil
 }
 
 // parseCallExprFrom parses the `(args...)` part of a call expression whose

@@ -1,0 +1,64 @@
+Int[3] globalScores = {10, 20, 30}
+
+func Int main(String[] args) {
+    // fixed-size declaration + literal init
+    Int[5] a = {1, 2, 3}
+    a[3] = 4
+    a[4] = 5
+
+    // for-in: walks elements (not indices), building a run of stars
+    String stars = ""
+    for x in a {
+        stars += "*"
+    }
+    print(stars)
+
+    // truncate/pad (seed_spec.md §4): {1, 2, 3} into a 5-element array
+    // pads the last two with the base value (0); a[i] reads that
+    // directly since a fixed array has no separate null tracking.
+    Int[5] padded = {1, 2, 3}
+    String marks = ""
+    Int i = 0
+    while i < 5 {
+        if padded[i] == 0 {
+            marks += "0"
+        } else {
+            marks += "1"
+        }
+        i++
+    }
+    print(marks)
+
+    // variable-sized declaration: `Int[size] n` fixes the length at the
+    // moment this statement runs
+    Int size = 4
+    Int[size] variable
+    String varMarks = ""
+    for v in variable {
+        varMarks += "*"
+    }
+    print(varMarks)
+
+    // whole-array reassignment (truncate/pad applies here too), and
+    // reassigning null (resets every element to its base value)
+    Int[3] scores = {7, 8, 9}
+    scores = {1}
+    scores = null
+    String afterNull = ""
+    Int j = 0
+    while j < 3 {
+        if scores[j] == 0 {
+            afterNull += "0"
+        } else {
+            afterNull += "1"
+        }
+        j++
+    }
+    print(afterNull)
+
+    // globalScores is a global array: elements can be read/written the
+    // same way as a local one.
+    globalScores[0] = 100
+
+    return 0
+}

@@ -28,6 +28,8 @@ func genValue(g *funcGen, e ast.Expr) (string, error) {
 			return "", fmt.Errorf("line %d: undefined variable %q", v.Line, v.Name)
 		}
 		return ref.ValOp, nil
+	case *ast.IndexExpr:
+		return genIndexValue(g, v)
 	case *ast.CallExpr:
 		return genCallValue(g, v)
 	case *ast.UnaryExpr:
@@ -36,6 +38,8 @@ func genValue(g *funcGen, e ast.Expr) (string, error) {
 		return genBinary(g, v)
 	case *ast.NullLit:
 		return "", fmt.Errorf("line %d: null cannot be used here", v.Line)
+	case *ast.ArrayLit:
+		return "", fmt.Errorf("line %d: codegen: array literal used outside of a declaration/assignment (sema bug)", v.Line)
 	default:
 		return "", fmt.Errorf("codegen: unsupported expression %T", e)
 	}
