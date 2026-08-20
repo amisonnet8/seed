@@ -297,7 +297,41 @@ func (c *checker) checkVarDecl(scope *scope, decl *ast.VarDecl) error {
 	if decl.Init == nil {
 		return nil
 	}
+	if isReadCall(decl.Init) {
+		return c.checkReadCall(scope, decl.Init.(*ast.CallExpr), decl.Type)
+	}
 	return c.checkAssignable(scope, decl.Type, decl.Init)
+}
+
+// isReadCall reports whether e is a call to the read() builtin — see
+// checkReadCall's doc for why that needs special-casing wherever a
+// scalar value can come from (VarDecl init, AssignStmt value).
+func isReadCall(e ast.Expr) bool {
+	call, ok := e.(*ast.CallExpr)
+	return ok && call.Callee == "read"
+}
+
+// checkReadCall validates `x = read(f)` / `String x = read(f)`
+// (seed_spec.md §8): x must be String-typed, and f a File. read() is
+// rejected everywhere else (see inferCallType's "read" case) because its
+// EOF-is-null result only has somewhere to go via a variable's own
+// isset flag — there's no other way for "this expression is null" to
+// flow through a general expression the way a literal `null` can.
+func (c *checker) checkReadCall(scope *scope, call *ast.CallExpr, targetType ast.Type) error {
+	if targetType != (ast.Type{Name: "String"}) {
+		return fmt.Errorf("line %d: read() returns String, cannot assign to %s", call.Line, typeName(targetType))
+	}
+	if len(call.Args) != 1 {
+		return fmt.Errorf("line %d: read expects exactly 1 argument", call.Line)
+	}
+	fileType, err := c.inferType(scope, call.Args[0])
+	if err != nil {
+		return err
+	}
+	if !isScalarOneOf(fileType, "File") {
+		return fmt.Errorf("line %d: read expects a File argument, got %s", call.Line, typeName(fileType))
+	}
+	return nil
 }
 
 // checkArrayVarDecl checks an array declaration's size (must be a
@@ -421,6 +455,9 @@ func (c *checker) checkAssignStmt(scope *scope, stmt *ast.AssignStmt) error {
 	}
 	if typ.IsArray {
 		return c.checkArrayValue(scope, ast.Type{Name: typ.Name}, stmt.Value)
+	}
+	if isReadCall(stmt.Value) {
+		return c.checkReadCall(scope, stmt.Value.(*ast.CallExpr), typ)
 	}
 	return c.checkAssignable(scope, typ, stmt.Value)
 }

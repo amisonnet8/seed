@@ -175,6 +175,16 @@ func genCallValue(g *funcGen, call *ast.CallExpr) (string, error) {
 		tmp := g.newTemp("^bool")
 		g.emit("\tNOT\t%s\t%s\n", tmp, ref.SetOp)
 		return tmp, nil
+	case "open":
+		return genOpenCall(g, call)
+	case "int":
+		return genIntConversion(g, call)
+	case "float":
+		return genFloatConversion(g, call)
+	case "string":
+		return genStringConversion(g, call)
+	case "len":
+		return genLenCall(g, call)
 	default:
 		return genCall(g, call, true)
 	}

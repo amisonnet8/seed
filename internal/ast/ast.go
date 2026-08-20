@@ -255,10 +255,18 @@ type ArrayLit struct {
 func (*ArrayLit) exprNode() {}
 
 // CallExpr is a function call, e.g. print("hello").
+//
+// ArgType is filled in by sema.Check only for the overloaded builtins
+// int/float/string/len (seed_spec.md §9), which each accept several
+// argument types and need different AMIVM-IR per one. It holds Args[0]'s
+// resolved type, so codegen can pick the right instruction/CALL without
+// re-deriving a type on its own (mirroring BinaryExpr/UnaryExpr's
+// ResultType). It's the zero Type for every other call.
 type CallExpr struct {
-	Callee string
-	Args   []Expr
-	Line   int
+	Callee  string
+	Args    []Expr
+	Line    int
+	ArgType Type
 }
 
 func (*CallExpr) exprNode() {}

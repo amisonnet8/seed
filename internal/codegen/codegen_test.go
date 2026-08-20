@@ -618,3 +618,129 @@ func Int main(String[] args) {
 		t.Errorf("expected fact to reference itself recursively (its own FUNC plus the recursive CALL), got:\n%s", ir)
 	}
 }
+
+func TestOpenCompilesToSeedrtCall(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    File f = open("x.txt", "r")
+    return 0
+}
+`)
+	if !strings.Contains(ir, "?seedrt.Open\t\"x.txt\"\t\"r\"") {
+		t.Errorf("expected open() to CALL ?seedrt.Open, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "^*seedrt.File") {
+		t.Errorf("expected File to compile to ^*seedrt.File, got:\n%s", ir)
+	}
+}
+
+func TestReadCapturesValueAndIsSetInOneCall(t *testing.T) {
+	// The core of read()'s EOF-is-null design: both results of
+	// seedrt.Read land directly in the variable's own value/isset
+	// operands via one multi-result CALL — see array.go... rather,
+	// stmt.go's genReadAssign.
+	ir := generate(t, `
+func Int main(String[] args) {
+    File f = open("x.txt", "r")
+    String line = read(f)
+    return 0
+}
+`)
+	if !strings.Contains(ir, "CALL\t%line\t%line_isset\t:\t?seedrt.Read\t%f") {
+		t.Errorf("expected read() to capture both value and isset from one CALL, got:\n%s", ir)
+	}
+}
+
+func TestWriteAndCloseCompileToSeedrtCalls(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    File f = open("x.txt", "w")
+    write(f, "hello")
+    close(f)
+    return 0
+}
+`)
+	if !strings.Contains(ir, "CALL\t:\t?seedrt.Write\t%f\t\"hello\"") {
+		t.Errorf("expected write() to CALL ?seedrt.Write, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "CALL\t:\t?seedrt.Close\t%f") {
+		t.Errorf("expected close() to CALL ?seedrt.Close, got:\n%s", ir)
+	}
+}
+
+func TestIntConversionDispatchesPerArgType(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    Float f = 1.5
+    Bool b = true
+    String s = "1"
+    Int a = int(f)
+    Int c = int(b)
+    Int d = int(s)
+    return 0
+}
+`)
+	if !strings.Contains(ir, "CALL\t%") || !strings.Contains(ir, "\t:\t?int\t%f") {
+		t.Errorf("expected int(Float) to use a bare ?int conversion, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?seedrt.BoolToInt\t%b") {
+		t.Errorf("expected int(Bool) to CALL ?seedrt.BoolToInt, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?seedrt.ParseInt\t%s") {
+		t.Errorf("expected int(String) to CALL ?seedrt.ParseInt, got:\n%s", ir)
+	}
+}
+
+func TestIntOnIntIsANoOp(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    Int x = 5
+    Int y = int(x)
+    return 0
+}
+`)
+	if strings.Contains(ir, "?int\t") || strings.Contains(ir, "?seedrt") {
+		t.Errorf("expected int(Int) to skip any conversion CALL, got:\n%s", ir)
+	}
+}
+
+func TestStringConversionUsesStrconv(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    Int i = 1
+    Float f = 1.5
+    Bool b = true
+    String a = string(i)
+    String c = string(f)
+    String d = string(b)
+    return 0
+}
+`)
+	if !strings.Contains(ir, "?strconv.Itoa\t%i") {
+		t.Errorf("expected string(Int) to CALL ?strconv.Itoa, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?strconv.FormatFloat\t%f\t'g'\t-1\t64") {
+		t.Errorf("expected string(Float) to CALL ?strconv.FormatFloat, got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?strconv.FormatBool\t%b") {
+		t.Errorf("expected string(Bool) to CALL ?strconv.FormatBool, got:\n%s", ir)
+	}
+}
+
+func TestLenDispatchesStringVsArray(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    Int[3] arr = {1, 2, 3}
+    String s = "hi"
+    Int n1 = len(s)
+    Int n2 = len(arr)
+    return 0
+}
+`)
+	if !strings.Contains(ir, "?utf8.RuneCountInString\t%s") {
+		t.Errorf("expected len(String) to CALL ?utf8.RuneCountInString (rune count, not byte length), got:\n%s", ir)
+	}
+	if !strings.Contains(ir, "?len\t%arr") {
+		t.Errorf("expected len(array) to CALL the builtin ?len, got:\n%s", ir)
+	}
+}

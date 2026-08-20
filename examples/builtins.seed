@@ -1,0 +1,26 @@
+func Int main(String[] args) {
+    // string(): Int/Float/Bool -> String
+    print(string(42))
+    print(string(3.14))
+    print(string(true))
+
+    // int(): Int/Float/String/Bool -> Int
+    Float pi = 3.14
+    print(string(int(pi)))      // truncates toward zero
+    print(string(int("123")))
+    print(string(int(false)))
+
+    // float(): Int/Float/String -> Float
+    print(string(float(7)))
+    print(string(float("2.5")))
+
+    // len(): String -> character count (not byte count — see the
+    // multi-byte example below), array -> element count
+    print(string(len("hello")))
+    print(string(len("こんにちは"))) // 5 characters, not 15 bytes
+
+    Int[4] nums = {10, 20, 30, 40}
+    print(string(len(nums)))
+
+    return 0
+}

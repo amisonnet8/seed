@@ -244,6 +244,122 @@ func (c *checker) inferCallType(scope *scope, call *ast.CallExpr) (typ ast.Type,
 	case "main":
 		return ast.Type{}, false, fmt.Errorf("line %d: main cannot be called directly", call.Line)
 
+	case "open":
+		if len(call.Args) != 2 {
+			return ast.Type{}, false, fmt.Errorf("line %d: open expects exactly 2 arguments", call.Line)
+		}
+		pathType, err := c.inferType(scope, call.Args[0])
+		if err != nil {
+			return ast.Type{}, false, err
+		}
+		if !isScalarOneOf(pathType, "String") {
+			return ast.Type{}, false, fmt.Errorf("line %d: open's path argument must be String, got %s", call.Line, typeName(pathType))
+		}
+		modeType, err := c.inferType(scope, call.Args[1])
+		if err != nil {
+			return ast.Type{}, false, err
+		}
+		if !isScalarOneOf(modeType, "String") {
+			return ast.Type{}, false, fmt.Errorf("line %d: open's mode argument must be String, got %s", call.Line, typeName(modeType))
+		}
+		return ast.Type{Name: "File"}, true, nil
+
+	case "read":
+		// Only valid as the direct RHS of an assignment/declaration (see
+		// checkReadCall) — read() returning `null` at EOF has to land in
+		// a variable's own isset flag, which nothing else in the
+		// language can express (see codegen's genReadAssign).
+		return ast.Type{}, false, fmt.Errorf("line %d: read() can only be used directly in an assignment, e.g. `line = read(f)`", call.Line)
+
+	case "write":
+		if len(call.Args) != 2 {
+			return ast.Type{}, false, fmt.Errorf("line %d: write expects exactly 2 arguments", call.Line)
+		}
+		fileType, err := c.inferType(scope, call.Args[0])
+		if err != nil {
+			return ast.Type{}, false, err
+		}
+		if !isScalarOneOf(fileType, "File") {
+			return ast.Type{}, false, fmt.Errorf("line %d: write's first argument must be File, got %s", call.Line, typeName(fileType))
+		}
+		lineType, err := c.inferType(scope, call.Args[1])
+		if err != nil {
+			return ast.Type{}, false, err
+		}
+		if !isScalarOneOf(lineType, "String") {
+			return ast.Type{}, false, fmt.Errorf("line %d: write's second argument must be String, got %s", call.Line, typeName(lineType))
+		}
+		return ast.Type{}, false, nil
+
+	case "close":
+		if len(call.Args) != 1 {
+			return ast.Type{}, false, fmt.Errorf("line %d: close expects exactly 1 argument", call.Line)
+		}
+		fileType, err := c.inferType(scope, call.Args[0])
+		if err != nil {
+			return ast.Type{}, false, err
+		}
+		if !isScalarOneOf(fileType, "File") {
+			return ast.Type{}, false, fmt.Errorf("line %d: close expects a File argument, got %s", call.Line, typeName(fileType))
+		}
+		return ast.Type{}, false, nil
+
+	case "int":
+		if len(call.Args) != 1 {
+			return ast.Type{}, false, fmt.Errorf("line %d: int expects exactly 1 argument", call.Line)
+		}
+		argType, err := c.inferType(scope, call.Args[0])
+		if err != nil {
+			return ast.Type{}, false, err
+		}
+		if !isScalarOneOf(argType, "Int", "Float", "String", "Bool") {
+			return ast.Type{}, false, fmt.Errorf("line %d: int does not accept %s", call.Line, typeName(argType))
+		}
+		call.ArgType = argType
+		return ast.Type{Name: "Int"}, true, nil
+
+	case "float":
+		if len(call.Args) != 1 {
+			return ast.Type{}, false, fmt.Errorf("line %d: float expects exactly 1 argument", call.Line)
+		}
+		argType, err := c.inferType(scope, call.Args[0])
+		if err != nil {
+			return ast.Type{}, false, err
+		}
+		if !isScalarOneOf(argType, "Int", "Float", "String") {
+			return ast.Type{}, false, fmt.Errorf("line %d: float does not accept %s", call.Line, typeName(argType))
+		}
+		call.ArgType = argType
+		return ast.Type{Name: "Float"}, true, nil
+
+	case "string":
+		if len(call.Args) != 1 {
+			return ast.Type{}, false, fmt.Errorf("line %d: string expects exactly 1 argument", call.Line)
+		}
+		argType, err := c.inferType(scope, call.Args[0])
+		if err != nil {
+			return ast.Type{}, false, err
+		}
+		if !isScalarOneOf(argType, "Int", "Float", "Bool") {
+			return ast.Type{}, false, fmt.Errorf("line %d: string does not accept %s", call.Line, typeName(argType))
+		}
+		call.ArgType = argType
+		return ast.Type{Name: "String"}, true, nil
+
+	case "len":
+		if len(call.Args) != 1 {
+			return ast.Type{}, false, fmt.Errorf("line %d: len expects exactly 1 argument", call.Line)
+		}
+		argType, err := c.inferType(scope, call.Args[0])
+		if err != nil {
+			return ast.Type{}, false, err
+		}
+		if !argType.IsArray && argType.Name != "String" {
+			return ast.Type{}, false, fmt.Errorf("line %d: len does not accept %s", call.Line, typeName(argType))
+		}
+		call.ArgType = argType
+		return ast.Type{Name: "Int"}, true, nil
+
 	default:
 		sig, exists := c.funcs[call.Callee]
 		if !exists {
@@ -280,4 +396,19 @@ func (c *checker) inferCallType(scope *scope, call *ast.CallExpr) (typ ast.Type,
 		}
 		return *sig.Return, true, nil
 	}
+}
+
+// isScalarOneOf reports whether t is a non-array type whose name is one
+// of names — used by the builtin conversions/File functions above, which
+// each accept a fixed, small set of scalar argument types.
+func isScalarOneOf(t ast.Type, names ...string) bool {
+	if t.IsArray {
+		return false
+	}
+	for _, n := range names {
+		if t.Name == n {
+			return true
+		}
+	}
+	return false
 }

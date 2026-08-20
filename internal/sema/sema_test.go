@@ -1019,3 +1019,177 @@ func Int main(String[] args) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestFileIOValidProgram(t *testing.T) {
+	// seed_spec.md §8's own example.
+	src := `
+func Int main(String[] args) {
+    File f = open("xxx/xxx.txt", "r")
+    while true {
+        String line = read(f)
+        if isnull(line) {
+            break
+        }
+        print(line)
+    }
+    close(f)
+    return 0
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestOpenRequiresStringArgs(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    File f = open(1, "r")
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "open's path argument must be String") {
+		t.Fatalf("expected open's path arg to require String, got %v", err)
+	}
+}
+
+func TestWriteRequiresFileAndString(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    File f = open("x", "w")
+    write(f, 5)
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "write's second argument must be String") {
+		t.Fatalf("expected write's second arg to require String, got %v", err)
+	}
+}
+
+func TestCloseRequiresFile(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int x = 1
+    close(x)
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "close expects a File argument") {
+		t.Fatalf("expected close to require File, got %v", err)
+	}
+}
+
+func TestReadOnlyValidAsDirectAssignment(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    File f = open("x", "r")
+    print(read(f))
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "read() can only be used directly in an assignment") {
+		t.Fatalf("expected read() to be rejected outside a direct assignment, got %v", err)
+	}
+}
+
+func TestReadTargetMustBeString(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    File f = open("x", "r")
+    Int x = read(f)
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "read() returns String") {
+		t.Fatalf("expected read() to require a String target, got %v", err)
+	}
+}
+
+func TestIntAcceptsIntFloatStringBool(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int a = int(1)
+    Int b = int(1.5)
+    Int c = int("1")
+    Int d = int(true)
+    return 0
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestIntRejectsArray(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int[3] a = {1, 2, 3}
+    Int x = int(a)
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "int does not accept Int[]") {
+		t.Fatalf("expected int() to reject an array, got %v", err)
+	}
+}
+
+func TestFloatRejectsBool(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Bool b = true
+    Float f = float(b)
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "float does not accept Bool") {
+		t.Fatalf("expected float() to reject Bool, got %v", err)
+	}
+}
+
+func TestStringRejectsString(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    String s = string("x")
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "string does not accept String") {
+		t.Fatalf("expected string() to reject String, got %v", err)
+	}
+}
+
+func TestLenAcceptsStringAndArray(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Int[3] a = {1, 2, 3}
+    Int n1 = len("hello")
+    Int n2 = len(a)
+    return 0
+}
+`
+	if err := check(t, src); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLenRejectsScalarNonString(t *testing.T) {
+	src := `
+func Int main(String[] args) {
+    Bool b = true
+    Int n = len(b)
+    return 0
+}
+`
+	err := check(t, src)
+	if err == nil || !strings.Contains(err.Error(), "len does not accept Bool") {
+		t.Fatalf("expected len() to reject Bool, got %v", err)
+	}
+}

@@ -246,7 +246,11 @@ func seedTypeToIR(t ast.Type) (string, error) {
 	case "Bool":
 		return "^bool", nil
 	case "File":
-		return "^*os.File", nil
+		// *seedrt.File, not *os.File: read() needs a persistent buffered
+		// reader alongside the *os.File (see seedrt's package doc), and
+		// Seed's File has no room for anything beyond a single pointer's
+		// worth of state otherwise.
+		return "^*seedrt.File", nil
 	default:
 		return "", fmt.Errorf("codegen: unknown type %q", t.Name)
 	}

@@ -1,0 +1,21 @@
+func Int main(String[] args) {
+    File w = open("/tmp/seed_file_io_example.txt", "w")
+    write(w, "first line")
+    write(w, "second line")
+    write(w, "third line")
+    close(w)
+
+    // seed_spec.md §8's own pattern: read() returns null at EOF,
+    // detected with isnull()
+    File r = open("/tmp/seed_file_io_example.txt", "r")
+    while true {
+        String line = read(r)
+        if isnull(line) {
+            break
+        }
+        print(line)
+    }
+    close(r)
+
+    return 0
+}

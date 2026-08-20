@@ -134,7 +134,7 @@ ENDFUNC
 amivm hello.ir -o hello.go -i xxrt=yourmodule/xxrt
 ```
 
-**メソッド呼び出し**(例: `file.Close()`)は、`FNTYPE`でレシーバー込みの関数型を定義→`FGET`でメソッドを値として取得→`CALL`、という手順になる。ファイル操作(`open`/`read`/`write`/`close`)をSeedランタイム経由で`os.File`等をラップして実装するか、Seed独自の`File`型を`STTYPE`で定義してラップするかは、実装時に設計すること。
+**メソッド呼び出し**(例: `file.Close()`)は、`FNTYPE`でレシーバー込みの関数型を定義→`FGET`でメソッドを値として取得→`CALL`、という手順になる。Seedの`File`型はこの方式を使わず、`seedrt.File`(`?pkg.Func`+`CALL`で呼べる普通の構造体)を`^*seedrt.File`という外部型ポインタとして直接参照する形で実装した(下記「確定した設計判断」参照)。
 
 ## 意味検証の責任分担(重要)
 
@@ -144,7 +144,7 @@ amivm hello.ir -o hello.go -i xxrt=yourmodule/xxrt
 
 ## Seed言語仕様とAMIVM-IRの対応関係で確定した設計判断
 
-`seed_spec.md`の意味論をAMIVM-IRへどう落とし込むかは自明ではない箇所があった。Step1〜6の実装を通じて確定した内容を記す(各判断の詳細な理由は該当パッケージのdocコメント参照)。
+`seed_spec.md`の意味論をAMIVM-IRへどう落とし込むかは自明ではない箇所があった。Step1〜7の実装を通じて確定した内容を記す(各判断の詳細な理由は該当パッケージのdocコメント参照)。
 
 - **`null`とベース値**: 各Seedスカラー変数を「値+`_isset`という付随bool」のペアとしてコード生成する(`internal/codegen`)。通常の読み取りは`_isset`を一切見ない(Goのゼロ値がSeedのベース値と全型で一致するため)。`isnull()`と`null`代入(値もベース値へリセットする)だけが`_isset`に触れる。配列は`_isset`を持たない(下記参照)
 - **配列はGoスライスにコンパイル**(`SLTYPE`+`SLMAKE`。Goの固定長配列型`[N]T`は不使用): `Int[size]`のようにサイズが実行時変数になり得るため、コンパイル時定数を要求するGo配列型では表現できない。「固定長」の性質はSeedが一切resizeを生成しないことで保証する。配列は`_isset`を持たない(宣言時に`SLMAKE`で必ず具体的な値が入るため、「未代入」状態が存在しない)
@@ -152,7 +152,10 @@ amivm hello.ir -o hello.go -i xxrt=yourmodule/xxrt
 - **配列の参照渡し**(7節): 配列パラメータはGoスライスの値渡しをそのまま使う(コピーしない)。Goのスライスヘッダは値渡しでも同じ裏付け配列を指すため、要素への`ASET`/`AGET`は呼び出し元にそのまま反映される。関数内でパラメータ自体を丸ごと再代入(`SLMAKE`)しても呼び出し元には反映されない(スコープ外の挙動として未対応。仕様の例では要求されていない)
 - **`main`の特別扱い**: Seedの`main(String[] args) Int`はGoの`func main()`(引数・戻り値なし)と非互換なため、ユーザーの`main`は内部的に`!seed_main`という別関数として出力し、実際の`!main`は`os.Args`を渡して`!seed_main`を呼び、戻り値を`os.Exit()`する薄いラッパーとして生成する。`main`という関数名の直接呼び出し禁止と、`seed_main`という名前のユーザー定義関数の禁止は、いずれもSeed側の意味検査(`internal/sema`)で保証する
 - **`+`演算子の型分岐**(5節): `Int+Int`→`ADD`、`Float+Float`→`ADD`、`String+String`→`CONCAT`と、Seedの`+`は演算対象の型によって生成するIR命令自体が変わる。異なる型同士の`+`はSeedの型チェック段階で弾く(amivm側は関与しない)。単項マイナスに対応するAMIVM-IR命令が無いため、`-x`は`SUB tmp 0 x`として生成する
-- **`read()`のEOF表現**: ファイル終端で`null`を返す仕様。Goの`bufio.Scanner`等は`(string, bool)`や`io.EOF`エラーで表現するため、Seedランタイム側の`read`実装で「EOFならSeedの`null`相当を返す」変換が必要(File I/OはStep7未着手)
+- **`File`型と`seedrt`**: `File`は`^*seedrt.File`(`seedrt`パッケージで定義した、`*os.File`+永続的な`*bufio.Reader`を持つ構造体へのポインタ)にマッピングする。`*os.File`直接ではなく永続的なReaderを持たせているのは、`read()`を呼ぶたびに新しい`bufio.Reader`を作ると、先読みしてバッファに溜め込んだ未消費バイトが`*os.File`のカーソルはすでに進んだ状態のまま捨てられてしまう(データロス)ため。`File`は他のスカラー型と同じく`_isset`を持つ(配列とは異なり、「まだopenしていない」状態を通常のnull追跡でそのまま表現できるため)
+- **`read()`のEOF表現**: `seedrt.Read`は`(string, bool)`を返す(`ok=false`がEOF)。AMIVM-IRの`CALL`は複数の結果オペランドを取れる(`CALL value isset : ?seedrt.Read file`)ため、この2値をSeed変数自身の値オペランドと`_isset`オペランドへ**直接**書き込める。これにより「`read()`の戻り値が動的にnullになりうる」という、リテラル`null`のような静的な仕組みでは表現できないケースが、既存のnull機構にそのまま乗る。ただしこの特別扱いが効くのは`x = read(f)`という直接代入の形のみで、`read()`を他の式にネストする使い方はsemaで拒否する(`isnull(x)`のように、結果を必ず変数へ受けてから判定するspecの用例に合わせた制約)
+- **ビルトイン変換の実装先**: `int()`/`float()`は数値同士の変換に限りGoの素の型変換(`?int`/`?float64`。CALLとキャストの構文的同一性を利用)を使い、`String`↔数値・`Bool`→`Int`のように素の変換が無い組み合わせだけ`seedrt`(`ParseInt`/`ParseFloat`/`BoolToInt`)に実装する。`string()`は全パターンで`strconv`(`Itoa`/`FormatFloat`/`FormatBool`)を使い`seedrt`は不要(Goの`string(65)`はルーン変換になり`"A"`を返してしまうため、素の型変換は使えない)。`len()`の文字列版は`len(string)`(バイト数)ではなく`unicode/utf8.RuneCountInString`(文字数)を使う
+- **`seedrt`の配布方法**: `seedrt`パッケージ自身の`.go`ファイルを`go:embed`で`seedrt`パッケージに埋め込み(`seedrt/embed.go`)、`seed build`実行時にスクラッチビルド用ディレクトリ配下の`seedrt/`へコピーしてから`amivm`の`-i seedrt=seedbuild/seedrt`で解決する。これにより生成コードの`import "seedrt"`は、`seed`バイナリがどこでビルド・実行されても常にローカルに解決できる(ネットワークアクセスや実モジュール依存が不要)
 
 以降、新しい設計判断が生じた場合もこの節(または実装コード側のコメント)に確定内容を残し、仮説段階のまま放置しないこと。
 

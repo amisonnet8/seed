@@ -294,11 +294,17 @@ func genAssignStmt(g *funcGen, stmt *ast.AssignStmt) error {
 	return genAssign(g, ref, stmt.Value)
 }
 
-// genAssign emits the SET(s) that store value into ref, keeping its isset
-// flag in sync. Assigning `null` resets the underlying value to its base
-// form too, so that a later plain read (which never re-checks isset)
-// still observes the base value.
+// genAssign emits the instruction(s) that store value into ref, keeping
+// its isset flag in sync. Assigning `null` resets the underlying value
+// to its base form too, so that a later plain read (which never
+// re-checks isset) still observes the base value. `read(f)` is
+// special-cased ahead of the general path: see genReadAssign — sema's
+// checkReadCall guarantees this is the only shape read() can appear in,
+// so both genVarDecl and genAssignStmt funnel through here to get it.
 func genAssign(g *funcGen, ref varRef, value ast.Expr) error {
+	if call, ok := value.(*ast.CallExpr); ok && call.Callee == "read" {
+		return genReadAssign(g, ref, call)
+	}
 	if _, isNull := value.(*ast.NullLit); isNull {
 		zero, err := zeroValueLiteral(ref.Type)
 		if err != nil {
@@ -376,9 +382,17 @@ func genExprStmt(g *funcGen, st *ast.ExprStmt) error {
 		}
 		g.emit("\tCALL\t:\t?fmt.Println\t%s\n", arg)
 		return nil
-	case "isnull":
+	case "isnull", "open", "int", "float", "string", "len":
+		// Legal but pointless as a bare statement (sema allows any
+		// value-producing call as a statement, result discarded); still
+		// must dispatch to each builtin's own codegen, not genCall's
+		// user-function path.
 		_, err := genCallValue(g, call)
 		return err
+	case "write":
+		return genWriteStmt(g, call)
+	case "close":
+		return genCloseStmt(g, call)
 	default:
 		_, err := genCall(g, call, false)
 		return err
