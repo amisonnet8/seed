@@ -1,0 +1,4 @@
+func Int main(String[] args) {
+    print("Hello, Seed!")
+    return 0
+}
