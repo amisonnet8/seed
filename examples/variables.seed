@@ -1,0 +1,22 @@
+String greeting
+
+func Int main(String[] args) {
+    print(greeting)              // greeting is still null -> base value "" -> prints an empty line
+    greeting = "Hello from a global!"
+    print(greeting)
+
+    String local = "local value"
+    print(local)
+
+    local = null                 // resets local back to null (base value "")
+    print(local)
+
+    Int count
+    Float ratio
+    Bool flag
+    File f
+    // Int/Float/Bool/File declared but not printed: converting them to
+    // String isn't implemented yet (that's a later development step).
+
+    return 0
+}
