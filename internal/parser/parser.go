@@ -15,8 +15,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"seed/internal/ast"
-	"seed/internal/lexer"
+	"github.com/amisonnet8/seed/internal/ast"
+	"github.com/amisonnet8/seed/internal/lexer"
 )
 
 // Parse lexes and parses src into a *ast.File.

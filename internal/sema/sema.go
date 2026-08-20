@@ -7,7 +7,7 @@ package sema
 import (
 	"fmt"
 
-	"seed/internal/ast"
+	"github.com/amisonnet8/seed/internal/ast"
 )
 
 // seedMainInternalName is codegen's internal amivm name for the user's

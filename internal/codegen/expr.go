@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"seed/internal/ast"
+	"github.com/amisonnet8/seed/internal/ast"
 )
 
 // genValue returns the AMIVM-IR operand for e's value, emitting whatever

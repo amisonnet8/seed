@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"seed/internal/ast"
+	"github.com/amisonnet8/seed/internal/ast"
 )
 
 // typeToIR maps any Seed type (scalar or array) to its AMIVM-IR type

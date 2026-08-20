@@ -3,7 +3,7 @@ package codegen
 import (
 	"fmt"
 
-	"seed/internal/ast"
+	"github.com/amisonnet8/seed/internal/ast"
 )
 
 // genOpenCall compiles open(path, mode) (seed_spec.md §8/§9) to a call

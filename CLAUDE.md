@@ -23,7 +23,7 @@ Goコード (.go)
 | ファイル | 役割 |
 |---|---|
 | `seed_spec.md` | **Seed言語仕様。唯一の正確な仕様。** 字句規則・型・演算子・制御構文・関数・ビルトイン関数などを定義。実装と齟齬が出たら、まず`seed_spec.md`の記述を疑い、仕様として確定してからコードを直すこと |
-| `amivm-handoff-for-xxlang.md` | amivm開発側から受け取った一時的な引き継ぎ資料。**本ファイルは一時ファイルであり、必要な情報は本CLAUDE.mdに転記済み。** ローカルから削除してよい(下記「AMIVM-IRの書き方」節が転記内容の本体) |
+| `README.md` / `README_ja.md` | GitHub向けの導入ドキュメント(英語版/日本語版)。インストール方法(`go install`)・CLIコマンド一覧・簡単な例を掲載。amivmの README と対になる構成 |
 | `amivm/` | 参照用にローカルへ置かれている amivm リポジトリのクローン(commit `ae07a2d`, https://github.com/amisonnet8/amivm )。**Seedのリポジトリの一部ではない。** amivmはSeedから見て「外部CLIツール」であり、`go install`で`PATH`に配置して呼び出す(下記参照)。このディレクトリは仕様を読むための参照物であり、Seed側のビルド成果物やimportパスがここに依存することがあってはならない |
 | 本ファイル(`CLAUDE.md`) | Seedプロジェクトの規約・AIによる開発支援のための注意点 |
 
@@ -156,28 +156,36 @@ amivm hello.ir -o hello.go -i xxrt=yourmodule/xxrt
 - **`read()`のEOF表現**: `seedrt.Read`は`(string, bool)`を返す(`ok=false`がEOF)。AMIVM-IRの`CALL`は複数の結果オペランドを取れる(`CALL value isset : ?seedrt.Read file`)ため、この2値をSeed変数自身の値オペランドと`_isset`オペランドへ**直接**書き込める。これにより「`read()`の戻り値が動的にnullになりうる」という、リテラル`null`のような静的な仕組みでは表現できないケースが、既存のnull機構にそのまま乗る。ただしこの特別扱いが効くのは`x = read(f)`という直接代入の形のみで、`read()`を他の式にネストする使い方はsemaで拒否する(`isnull(x)`のように、結果を必ず変数へ受けてから判定するspecの用例に合わせた制約)
 - **ビルトイン変換の実装先**: `int()`/`float()`は数値同士の変換に限りGoの素の型変換(`?int`/`?float64`。CALLとキャストの構文的同一性を利用)を使い、`String`↔数値・`Bool`→`Int`のように素の変換が無い組み合わせだけ`seedrt`(`ParseInt`/`ParseFloat`/`BoolToInt`)に実装する。`string()`は全パターンで`strconv`(`Itoa`/`FormatFloat`/`FormatBool`)を使い`seedrt`は不要(Goの`string(65)`はルーン変換になり`"A"`を返してしまうため、素の型変換は使えない)。`len()`の文字列版は`len(string)`(バイト数)ではなく`unicode/utf8.RuneCountInString`(文字数)を使う
 - **`seedrt`の配布方法**: `seedrt`パッケージ自身の`.go`ファイルを`go:embed`で`seedrt`パッケージに埋め込み(`seedrt/embed.go`)、`seed build`実行時にスクラッチビルド用ディレクトリ配下の`seedrt/`へコピーしてから`amivm`の`-i seedrt=seedbuild/seedrt`で解決する。これにより生成コードの`import "seedrt"`は、`seed`バイナリがどこでビルド・実行されても常にローカルに解決できる(ネットワークアクセスや実モジュール依存が不要)
+- **CLIコマンド構成**: `seed <build|run|emit-ir|emit-go|help> [-o file] [-v] <file.seed>`。`build`/`emit-ir`/`emit-go`はパイプラインの異なる段階(実行ファイル/AMIVM-IR/Goソース)で止めて出力するだけの違いで、共通ロジックは`cmd/seed/build.go`の`compileToIR`→`compileToGo`→`compileToBinary`という3段の関数に分けて実装している(各コマンドは必要な段までしか呼ばない)。`-v`は生成されたIR・amivm自身の`-v`トレース(型チェック過程+最終Goコード)を標準出力に流すだけで、amivmの`-v`を素通しする形に倣っている
+- **`seed`自体の配布は`go install`のみ**(amivmと同じ方針): `go.mod`のモジュールパスは`github.com/amisonnet8/seed`(実リポジトリのパスと一致させる必要がある。`go install`はVCS経由でモジュールを解決するため、パスなしの`module seed`のようなプレースホルダー名では動かない)。Seedのビルドは最終的に必ず`go build`を経由するため、エンドユーザーは元々Goツールチェーンを持っている前提になり、バイナリ配布やDocker配布は現時点では採用していない(将来必要になれば追加を検討)
 
 以降、新しい設計判断が生じた場合もこの節(または実装コード側のコメント)に確定内容を残し、仮説段階のまま放置しないこと。
 
-## リポジトリ構成(提案)
+## リポジトリ構成
 
-現時点でSeedはコード未着手(Go moduleも未初期化)。実装を始める際の構成の目安。決定事項ではないため、実装が進む中で実態に合わせて更新すること。
+Step1〜8で実装済みの実際の構成。
 
 ```
 seed/
   seed_spec.md         Seed言語仕様(唯一の正確な仕様)
   CLAUDE.md            本ファイル
-  go.mod
-  cmd/seed/            CLIエントリポイント(seed build 等)
+  README.md / README_ja.md  導入ドキュメント
+  go.mod               module github.com/amisonnet8/seed
+  Makefile             build/install/test/fmt/vet/tidy/clean タスク
+  cmd/seed/
+    main.go             CLIエントリポイント(build/run/emit-ir/emit-go/help のディスパッチ)
+    build.go             compileToIR → compileToGo → compileToBinary の3段パイプライン
   internal/lexer/       字句解析
   internal/parser/      構文解析 → AST
   internal/ast/         AST定義
   internal/sema/        意味検査(型チェック・スコープ解決。「amivm側は検証しない」ため必須)
-  internal/codegen/     AST → AMIVM-IR生成
+  internal/codegen/     AST → AMIVM-IR生成(codegen.go/array.go/func.go/builtins.go/stmt.go/expr.go/scope.go)
   seedrt/                Seedランタイム(open/read/write/close等、CALLで呼ばれるGo実装)。
                           生成されたGoコード(ユーザー側の別モジュール)からimportされるため、
-                          internal/配下に置けない(Goのinternal可視性ルールのため公開パッケージにする)
-  testdata/ or examples/  サンプルSeedプログラム(`.seed`。実装した構文ごとに追加)
+                          internal/配下に置けない(Goのinternal可視性ルールのため公開パッケージにする)。
+                          自身の.goファイルをgo:embedで埋め込み(embed.go)、seedビルド時にスクラッチ
+                          モジュールへコピーする(上記「確定した設計判断」参照)
+  examples/              サンプルSeedプログラム(`.seed`。実装した構文ごとに追加)
 ```
 
 ## 開発の進め方
@@ -185,5 +193,5 @@ seed/
 1. `seed_spec.md`を正として実装する。仕様に曖昧な点や矛盾を見つけたら、まず仕様側を疑い、確定させてからコードを直す
 2. AMIVM-IRを生成する処理を書いたら、実際に`amivm`(`PATH`にインストール済みのもの)にかけて`go build`まで通し、動作確認する。IRの構文・カテゴリ違反はamivmのパース/型チェックで初めて顕在化するため、「ロジック上正しそうに見える」だけで済ませない
 3. Seedの意味検査(型チェック等)は、amivmに渡す前にSeed側で完了させる。amivmの`go/types`エラーをユーザー向けエラーとしてそのまま出さない
-4. 新しい構文・ビルトイン関数を実装したら、対応するサンプルSeedプログラムを`testdata/`等に追加し、生成されたIR・Goコード・実行結果まで確認する
+4. 新しい構文・ビルトイン関数を実装したら、対応するサンプルSeedプログラムを`examples/`に追加し、生成されたIR・Goコード・実行結果まで確認する
 5. amivm本体の仕様が更新された場合(`amivm/docs/amivm_spec.md`または最新リポジトリを再確認)、本ファイルの「AMIVM-IRの書き方」節が古くなっていないか照合し、必要なら更新する

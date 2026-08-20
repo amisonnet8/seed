@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"seed/internal/ast"
+	"github.com/amisonnet8/seed/internal/ast"
 )
 
 // Arrays don't get an isset companion the way scalars do (see scope.go's

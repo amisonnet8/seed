@@ -3,7 +3,7 @@ package sema
 import (
 	"fmt"
 
-	"seed/internal/ast"
+	"github.com/amisonnet8/seed/internal/ast"
 )
 
 // inferType computes the static type of e. null has no static type here;

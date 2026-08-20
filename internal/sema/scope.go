@@ -1,6 +1,6 @@
 package sema
 
-import "seed/internal/ast"
+import "github.com/amisonnet8/seed/internal/ast"
 
 // scope is a chain of block scopes (seed_spec.md §3 "スコープ"): lookups
 // walk outward through parents (so a local can shadow a global), but a

@@ -3,7 +3,7 @@ package codegen
 import (
 	"fmt"
 
-	"seed/internal/ast"
+	"github.com/amisonnet8/seed/internal/ast"
 )
 
 // varRef is a Seed variable resolved to its AMIVM-IR operands: the value

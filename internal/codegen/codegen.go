@@ -54,7 +54,7 @@ import (
 	"strconv"
 	"strings"
 
-	"seed/internal/ast"
+	"github.com/amisonnet8/seed/internal/ast"
 )
 
 // seedMainFunc is the amivm-level name for the user's `main`. It must

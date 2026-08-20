@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"seed/internal/codegen"
-	"seed/internal/parser"
-	"seed/internal/sema"
+	"github.com/amisonnet8/seed/internal/codegen"
+	"github.com/amisonnet8/seed/internal/parser"
+	"github.com/amisonnet8/seed/internal/sema"
 )
 
 func generate(t *testing.T, src string) string {

@@ -3,7 +3,7 @@ package codegen
 import (
 	"fmt"
 
-	"seed/internal/ast"
+	"github.com/amisonnet8/seed/internal/ast"
 )
 
 // genBlock compiles one `{ }` block's statements in a fresh funcCtx

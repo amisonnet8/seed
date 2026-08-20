@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"seed/internal/parser"
-	"seed/internal/sema"
+	"github.com/amisonnet8/seed/internal/parser"
+	"github.com/amisonnet8/seed/internal/sema"
 )
 
 func check(t *testing.T, src string) error {

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"seed/seedrt"
+	"github.com/amisonnet8/seed/seedrt"
 )
 
 func TestWriteReadRoundTrip(t *testing.T) {
