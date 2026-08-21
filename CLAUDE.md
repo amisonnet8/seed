@@ -24,7 +24,7 @@ Goコード (.go)
 |---|---|
 | `seed_spec.md` | **Seed言語仕様。唯一の正確な仕様。** 字句規則・型・演算子・制御構文・関数・ビルトイン関数などを定義。実装と齟齬が出たら、まず`seed_spec.md`の記述を疑い、仕様として確定してからコードを直すこと |
 | `README.md` / `README_ja.md` | GitHub向けの導入ドキュメント(英語版/日本語版)。インストール方法(`go install`)・CLIコマンド一覧・簡単な例を掲載。amivmの README と対になる構成 |
-| `amivm/` | 参照用にローカルへ置かれている amivm リポジトリのクローン(commit `ae07a2d`, https://github.com/amisonnet8/amivm )。**Seedのリポジトリの一部ではない。** amivmはSeedから見て「外部CLIツール」であり、`go install`で`PATH`に配置して呼び出す(下記参照)。このディレクトリは仕様を読むための参照物であり、Seed側のビルド成果物やimportパスがここに依存することがあってはならない |
+| `amivm/` | 参照用にローカルへ置かれている amivm リポジトリのクローン(commit `51c5207`, https://github.com/amisonnet8/amivm )。**Seedのリポジトリの一部ではない。** amivmはSeedから見て「外部CLIツール」であり、`go install`で`PATH`に配置して呼び出す(下記参照)。このディレクトリは仕様を読むための参照物であり、Seed側のビルド成果物やimportパスがここに依存することがあってはならない |
 | 本ファイル(`CLAUDE.md`) | Seedプロジェクトの規約・AIによる開発支援のための注意点 |
 
 ## amivmのインストール・呼び出し方
@@ -52,11 +52,11 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 
 ## AMIVM-IRの書き方(唯一の正確な仕様)
 
-以下はamivmの`docs/amivm_spec.md`(commit `ae07a2d`時点)からの転記。**Seedのコード生成部がAMIVM-IRを出力する際は、この命令セット・カテゴリ・Kind分類に厳密に従うこと。** amivm本体のバージョンを上げた際は、`amivm/docs/amivm_spec.md`(または最新のamivmリポジトリ)と齟齬がないか確認すること。
+以下はamivmの`docs/amivm_spec.md`(commit `51c5207`時点)からの転記。**Seedのコード生成部がAMIVM-IRを出力する際は、この命令セット・カテゴリ・Kind分類に厳密に従うこと。** amivm本体のバージョンを上げた際は、`amivm/docs/amivm_spec.md`(または最新のamivmリポジトリ)と齟齬がないか確認すること。
 
 ### 制約・前提条件
 
-- `FUNC`はトップレベルのみに置ける(関数のネスト不可)。`STTYPE`・`CLOS`・`SEL`もネスト不可
+- `FUNC`はトップレベルのみに置ける(関数のネスト不可)。`STTYPE`・`SEL`もネスト不可。`CLOS`のみ例外で、`CLOS`本体の中にさらに`CLOS`をネストできる(クロージャーを返すクロージャー=カリー化の表現用。Seedは現時点でクロージャー・第一級関数を持たないため未使用)
 - 配列は1次元固定長のみ。**多次元配列はAMIVM-IR自体では表現しない。Seed側で1次元に展開すること**(もっともSeedの言語仕様自体が1次元配列のみのため、この変換は不要になる見込み)
 - チャネル・スライス・map・構造体・クロージャーは、対応する`TYPE`系命令(`SLTYPE`/`MPTYPE`/`STTYPE`/`FNTYPE`)で型を定義してから使う
 - トークンの区切り文字は**タブ**。行頭のインデント用タブは無視。`//`で始まる行はコメントとして無視
@@ -68,7 +68,7 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 | 記号 | 意味 |
 |---|---|
 | `$` | 関数引数 |
-| `&` | クロージャー引数 |
+| `&` | クロージャー引数(`&N`は自分がいる`CLOS`階層のN番目、`&L-N`で階層`L`を明示指定できる) |
 | `%` | 関数内変数名 |
 | `@` | 関数外変数名(グローバル変数) |
 | `^` | 型名 |
@@ -82,13 +82,13 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 | 分類 | 命令 |
 |---|---|
 | 変数宣言 | `VAR local type1` / `GVAR global type1` |
-| 代入・ポインタ・配列 | `SET` `ASET` `AGET` `PSET` `PGET` `ADDR` |
+| 代入・ポインタ・配列 | `SET` `ASET` `AGET` `PSET` `PGET` `ADDR`(第3引数`point`省略可。`&v.field`/`&v[i]`も表現できる) |
 | 算術 | `ADD` `SUB` `MUL` `DIV` `MOD` |
 | ビット演算 | `BAND` `BOR` `BXOR` `BCLEAR` `BNOT` |
 | シフト | `SHL` `SHR` |
 | 論理演算 | `AND` `OR` `NOT` |
 | 比較 | `EQ` `NEQ` `LT` `LTE` `GT` `GTE` |
-| 文字列連結 | `CONCAT single slice1 slice2 ...` |
+| 文字列連結 | `CONCAT single1 slice1 slice2 ...` |
 | ラベル・分岐 | `LABEL label` / `GOTO label` / `IF boolean1 label` |
 | 関数定義 | `FUNC defname type1 ... : type3 ...` / `RET` / `ENDFUNC` |
 | 関数呼び出し | `CALL multi1 ... : callname value1 ...` / `DEFER` / `SPAWN` |
@@ -96,14 +96,14 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 | select | `SEL` `CASESEND` `CASERECV` `DEFAULT` `ENDSEL` |
 | スライス | `SLTYPE` `SLMAKE` `SLICE` |
 | 構造体 | `STTYPE` `FIELD` `ENDSTTYPE` `FSET` `FGET` |
-| map | `MPTYPE` `MPMAKE` `MSET` `MGET` |
-| クロージャー・関数型 | `FNTYPE` `CLOS` `ENDCLOS` |
+| map | `MPTYPE` `MPMAKE` `MSET` `MGET` `MPKEYS`(mapの全キーを`slices.Collect(maps.Keys(m))`で取得。未使用) |
+| クロージャー・関数型 | `FNTYPE` `CLOS` `ENDCLOS`(`CLOS`のみネスト可。代入先は`%xxx`に限らず`$N`/`@xxx`/`&N`/`&L-N`も可。いずれも未使用) |
 
-各命令が生成するGoコードの詳細な対応表(全命令のGo生成形)は`amivm/docs/amivm_spec.md`(3.4節)を参照。**キャスト・組み込み関数(`close`/`len`/`cap`等)は専用命令を持たず`CALL`に統合されている**(Goの型変換`T(v)`は構文上`ast.CallExpr`と同一のため)。Seedの`int()`/`float()`/`string()`/`len()`等のビルトイン関数をIRへ落とす際は、この`CALL`統合方式を踏まえること。
+各命令が生成するGoコードの詳細な対応表(全命令のGo生成形)は`amivm/docs/amivm_spec.md`(3.4節)を参照。**キャスト・組み込み関数(`close`/`len`/`cap`等)は専用命令を持たず`CALL`に統合されている**(Goの型変換`T(v)`は構文上`ast.CallExpr`と同一のため)。Seedの`int()`/`float()`/`string()`/`len()`等のビルトイン関数をIRへ落とす際は、この`CALL`統合方式を踏まえること。`callname`(`CALL`の呼び出し対象)・`value`(値全般)は`%xxx`保持の関数値・メソッド値に加えて`@xxx`(パッケージレベル変数)・`$N`/`&N`(パラメータ・クロージャー引数)・`!xxx`/`?xxx`(関数そのものを呼ばずに値として渡す)も許容するよう拡張されたが、Seedはまだ第一級関数を持たないためこの拡張も未使用。
 
 ### オペランドカテゴリ・Kind
 
-各命令の引数(`whole`/`integer`/`number`/`boolean`/`slice`/`ordered`/`value`/`variable`/`single`/`multi`/`field`/`type`/`label`等)がどの形式のトークンを許容するかは、`amivm/docs/amivm_spec.md`の3.5節(オペランドカテゴリ)・3.6節(Kindの形状分類)に定義されている。Seedのコード生成部がここから逸脱したトークンを出力すると、amivmのパース段階で拒否される。実装前に必ず該当節を通読すること。
+各命令の引数(`whole`/`integer`/`number`/`boolean`/`slice`/`ordered`/`value`/`variable`/`single1`/`single2`/`multi`/`field`/`type`/`label`等)がどの形式のトークンを許容するかは、`amivm/docs/amivm_spec.md`の3.5節(オペランドカテゴリ)・3.6節(Kindの形状分類)に定義されている。Seedのコード生成部がここから逸脱したトークンを出力すると、amivmのパース段階で拒否される。実装前に必ず該当節を通読すること。
 
 ## 独自のGoランタイムを呼ぶ
 
