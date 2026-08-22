@@ -92,4 +92,11 @@ seedrt/             Seed's Go runtime library (open/read/write/close, and a few
 examples/           runnable .seed sample programs, one group per language feature
 seed_spec.md        the Seed language specification (the only authoritative one)
 CLAUDE.md           project conventions for AI-assisted development
+seed_implementation_notes.md  lessons learned writing an AMIVM-IR-generating frontend,
+                     for whoever implements the next language on top of amivm
+LICENSE             MIT
 ```
+
+## License
+
+[MIT](LICENSE)

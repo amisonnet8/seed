@@ -176,6 +176,7 @@ seed/
   CLAUDE.md            本ファイル
   seed_implementation_notes.md  AMIVM上への実装知見メモ(次にAMIVM上で別言語を作る人/AI向け)
   README.md / README_ja.md  導入ドキュメント
+  LICENSE               MIT
   go.mod               module github.com/amisonnet8/seed
   Makefile             build/install/test/fmt/vet/tidy/clean タスク
   cmd/seed/

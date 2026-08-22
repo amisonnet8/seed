@@ -92,4 +92,11 @@ seedrt/              Seedランタイム(open/read/write/close、いくつかの
 examples/            実行可能な.seedサンプル(言語機能ごとにグループ化)
 seed_spec.md         Seed言語仕様(唯一の正確な仕様)
 CLAUDE.md            AIによる開発支援のためのプロジェクト規約
+seed_implementation_notes.md  AMIVM-IRを生成するフロントエンド実装の知見メモ。
+                      次にamivm上で別言語を実装する人/AI向け
+LICENSE              MIT
 ```
+
+## ライセンス
+
+[MIT](LICENSE)
