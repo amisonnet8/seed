@@ -16,8 +16,5 @@
     }
   },
   "postCreateCommand": "sudo apt-get update && sudo apt-get install -y shellcheck make && go install golang.org/x/tools/gopls@latest && go install golang.org/x/tools/cmd/goimports@latest && go install golang.org/x/tools/cmd/stringer@latest",
-  "mounts": [
-    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
-  ],
   "remoteUser": "vscode"
 }
