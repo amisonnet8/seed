@@ -2,6 +2,7 @@ package lexer
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -174,9 +175,122 @@ func (l *Lexer) lexString(line int) (Token, error) {
 		if r == '\n' {
 			return Token{}, fmt.Errorf("line %d: unterminated string literal", line)
 		}
+		if r == '\\' {
+			if err := l.lexEscape(line, &b); err != nil {
+				return Token{}, err
+			}
+			continue
+		}
 		b.WriteRune(r)
 		l.pos++
 	}
+}
+
+// lexEscape decodes a single backslash escape sequence inside a string
+// literal and writes the resulting byte(s) to b. The set of escapes
+// matches Go's interpreted string literal syntax exactly (seed_spec.md
+// §2), since string literals ultimately round-trip through
+// strconv.Quote into Go/AMIVM-IR source (internal/codegen).
+func (l *Lexer) lexEscape(line int, b *strings.Builder) error {
+	l.pos++ // consume '\'
+	if l.pos >= len(l.src) || l.peekRune() == '\n' {
+		return fmt.Errorf("line %d: unterminated escape sequence in string literal", line)
+	}
+	switch r := l.peekRune(); r {
+	case 'a':
+		b.WriteByte('\a')
+		l.pos++
+	case 'b':
+		b.WriteByte('\b')
+		l.pos++
+	case 'f':
+		b.WriteByte('\f')
+		l.pos++
+	case 'n':
+		b.WriteByte('\n')
+		l.pos++
+	case 'r':
+		b.WriteByte('\r')
+		l.pos++
+	case 't':
+		b.WriteByte('\t')
+		l.pos++
+	case 'v':
+		b.WriteByte('\v')
+		l.pos++
+	case '\\':
+		b.WriteByte('\\')
+		l.pos++
+	case '"':
+		b.WriteByte('"')
+		l.pos++
+	case 'x':
+		l.pos++
+		v, err := l.lexEscapeDigits(line, 16, 2)
+		if err != nil {
+			return err
+		}
+		b.WriteByte(byte(v))
+	case 'u':
+		l.pos++
+		v, err := l.lexEscapeDigits(line, 16, 4)
+		if err != nil {
+			return err
+		}
+		if !isValidUnicodeCodePoint(v) {
+			return fmt.Errorf("line %d: escape sequence is invalid Unicode code point", line)
+		}
+		b.WriteRune(rune(v))
+	case 'U':
+		l.pos++
+		v, err := l.lexEscapeDigits(line, 16, 8)
+		if err != nil {
+			return err
+		}
+		if !isValidUnicodeCodePoint(v) {
+			return fmt.Errorf("line %d: escape sequence is invalid Unicode code point", line)
+		}
+		b.WriteRune(rune(v))
+	case '0', '1', '2', '3', '4', '5', '6', '7':
+		v, err := l.lexEscapeDigits(line, 8, 3)
+		if err != nil {
+			return err
+		}
+		if v > 255 {
+			return fmt.Errorf("line %d: octal escape value out of range (must be 0-255)", line)
+		}
+		b.WriteByte(byte(v))
+	default:
+		return fmt.Errorf("line %d: unknown escape sequence \\%c in string literal", line, r)
+	}
+	return nil
+}
+
+// lexEscapeDigits reads exactly n digits in the given base (16 for
+// \x/\u/\U, 8 for octal) and returns their value.
+func (l *Lexer) lexEscapeDigits(line int, base, n int) (int64, error) {
+	start := l.pos
+	for i := 0; i < n; i++ {
+		if l.pos >= len(l.src) || !isBaseDigit(l.peekRune(), base) {
+			return 0, fmt.Errorf("line %d: expected %d digits in escape sequence", line, n)
+		}
+		l.pos++
+	}
+	return strconv.ParseInt(string(l.src[start:l.pos]), base, 64)
+}
+
+func isBaseDigit(r rune, base int) bool {
+	switch base {
+	case 8:
+		return r >= '0' && r <= '7'
+	case 16:
+		return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+	}
+	return false
+}
+
+func isValidUnicodeCodePoint(v int64) bool {
+	return v >= 0 && v <= 0x10FFFF && !(v >= 0xD800 && v <= 0xDFFF)
 }
 
 func (l *Lexer) lexOperator(line int) (Token, error) {

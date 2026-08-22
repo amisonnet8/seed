@@ -1,0 +1,12 @@
+func Int main(String[] args) {
+    // String literal escape sequences (seed_spec.md §2), matching Go's
+    // interpreted string literal syntax exactly.
+    print("line1\nline2")
+    print("a\ttabbed\tline")
+    print("quote: \" backslash: \\")
+    print("hex byte: \x41\x42")     // "AB"
+    print("octal byte: \101\102")   // "AB"
+    print("wide unicode escape: \U0001F600")
+
+    return 0
+}

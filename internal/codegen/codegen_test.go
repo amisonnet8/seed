@@ -744,3 +744,18 @@ func Int main(String[] args) {
 		t.Errorf("expected len(array) to CALL the builtin ?len, got:\n%s", ir)
 	}
 }
+
+func TestStringLiteralEscapesRoundTripThroughQuote(t *testing.T) {
+	ir := generate(t, `
+func Int main(String[] args) {
+    String s = "line1\nline2\ttabbed \"quoted\" back\\slash"
+    return 0
+}
+`)
+	// The lexer decodes escapes into the real byte values, and codegen
+	// re-quotes via strconv.Quote when emitting IR: this must produce
+	// a valid Go/AMIVM-IR string token, not the original source spelling.
+	if !strings.Contains(ir, `SET	%s	"line1\nline2\ttabbed \"quoted\" back\\slash"`) {
+		t.Errorf("expected decoded escapes to be re-quoted for IR output, got:\n%s", ir)
+	}
+}
