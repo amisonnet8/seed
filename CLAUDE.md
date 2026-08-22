@@ -52,11 +52,11 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 
 ## AMIVM-IRの書き方(唯一の正確な仕様)
 
-以下はamivmの`docs/amivm_spec.md`(commit `8d2bf04`時点)からの転記。**Seedのコード生成部がAMIVM-IRを出力する際は、この命令セット・カテゴリ・Kind分類に厳密に従うこと。** amivm本体のバージョンを上げた際は、`amivm/docs/amivm_spec.md`(または最新のamivmリポジトリ)と齟齬がないか確認すること。
+以下はamivmの`docs/amivm_spec.md`(commit `253a3fd`時点)からの転記。**Seedのコード生成部がAMIVM-IRを出力する際は、この命令セット・カテゴリ・Kind分類に厳密に従うこと。** amivm本体のバージョンを上げた際は、`amivm/docs/amivm_spec.md`(または最新のamivmリポジトリ)と齟齬がないか確認すること。
 
 ### 制約・前提条件
 
-- `FUNC`はトップレベルのみに置ける(関数のネスト不可)。`STTYPE`・`SEL`もネスト不可。`CLOS`のみ例外で、`CLOS`本体の中にさらに`CLOS`をネストできる(クロージャーを返すクロージャー=カリー化の表現用。Seedは現時点でクロージャー・第一級関数を持たないため未使用)
+- `FUNC`・`STTYPE`はネスト不可。`IF`・`LOOP`・`CLOS`・`SEL`はいずれもネストできる(互いの本体の中に任意の組み合わせ・任意の深さで書ける。Seedの`internal/codegen`はif/elif/else・while・for-inをこの`IF`/`LOOP`に直接コンパイルしており、多用している)
 - 配列は1次元固定長のみ。**多次元配列はAMIVM-IR自体では表現しない。Seed側で1次元に展開すること**(もっともSeedの言語仕様自体が1次元配列のみのため、この変換は不要になる見込み)
 - チャネル・スライス・map・構造体・クロージャーは、対応する`TYPE`系命令(`SLTYPE`/`MPTYPE`/`STTYPE`/`FNTYPE`)で型を定義してから使う
 - トークンの区切り文字は**タブ**。行頭のインデント用タブは無視。`//`で始まる行はコメントとして無視
@@ -89,17 +89,20 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 | 論理演算 | `AND` `OR` `NOT` |
 | 比較 | `EQ` `NEQ` `LT` `LTE` `GT` `GTE` |
 | 文字列連結 | `CONCAT single1 slice1 slice2 ...` |
-| ラベル・分岐 | `LABEL label` / `GOTO label` / `IF boolean1 label` |
+| ラベル・GOTO | `LABEL label` / `GOTO label` |
+| 条件分岐 | `IF boolean1` / `ELIF boolean1` / `ELSE` / `ENDIF`(ブロック形。Goの`if`/`else if`/`else`に対応。単一行`IF boolean1 label`は廃止され後方互換は無い) |
+| ループ | `LOOP` / `BREAK` / `CONTINUE` / `ENDLOOP`(Goの無限`for {}`。条件付きループは`LOOP`の中で`IF`+`BREAK`を組み合わせて表現する) |
+| 型アサーション | `ASSERT multi1 (multi2) variable type1`(Goの`v.(T)`。未使用) |
 | 関数定義 | `FUNC defname type1 ... : type3 ...` / `RET` / `ENDFUNC` |
 | 関数呼び出し | `CALL multi1 ... : callname value1 ...` / `DEFER` / `SPAWN` |
 | チャネル | `CHTYPE` `CHMAKE` `CHSEND` `CHRECV` |
-| select | `SEL` `CASESEND` `CASERECV` `DEFAULT` `ENDSEL` |
+| select | `SEL` `CASESEND` `CASERECV` `DEFAULT` `ENDSEL`(`CASESEND`/`CASERECV`/`DEFAULT`はもう`label`を取らない。次のケースか`ENDSEL`までがブロック本体) |
 | スライス | `SLTYPE` `SLMAKE` `SLICE` |
 | 構造体 | `STTYPE` `FIELD` `ENDSTTYPE` `FSET` `FGET` |
 | map | `MPTYPE` `MPMAKE` `MSET` `MGET` `MPKEYS`(mapの全キーを`slices.Collect(maps.Keys(m))`で取得。未使用) |
-| クロージャー・関数型 | `FNTYPE` `CLOS` `ENDCLOS`(`CLOS`のみネスト可。代入先は`%xxx`に限らず`$N`/`@xxx`/`&N`/`&L-N`も可。いずれも未使用) |
+| クロージャー・関数型 | `FNTYPE` `CLOS` `ENDCLOS`(`CLOS`のみ元々ネスト可。代入先は`%xxx`に限らず`$N`/`@xxx`/`&N`/`&L-N`も可。いずれも未使用) |
 
-各命令が生成するGoコードの詳細な対応表(全命令のGo生成形)は`amivm/docs/amivm_spec.md`(3.4節)を参照。**キャスト・組み込み関数(`close`/`len`/`cap`等)は専用命令を持たず`CALL`に統合されている**(Goの型変換`T(v)`は構文上`ast.CallExpr`と同一のため)。Seedの`int()`/`float()`/`string()`/`len()`等のビルトイン関数をIRへ落とす際は、この`CALL`統合方式を踏まえること。`callname`(`CALL`の呼び出し対象)・`value`(値全般)は`%xxx`保持の関数値・メソッド値に加えて`@xxx`(パッケージレベル変数)・`$N`/`&N`(パラメータ・クロージャー引数)・`!xxx`/`?xxx`(関数そのものを呼ばずに値として渡す)も許容するよう拡張されたが、Seedはまだ第一級関数を持たないためこの拡張も未使用。
+各命令が生成するGoコードの詳細な対応表(全命令のGo生成形)は`amivm/docs/amivm_spec.md`(3.4節)を参照。**キャスト・組み込み関数(`close`/`len`/`cap`等)は専用命令を持たず`CALL`に統合されている**(Goの型変換`T(v)`は構文上`ast.CallExpr`と同一のため)。型アサーション(`v.(T)`)だけは構文が異なる別ASTノード(`ast.TypeAssertExpr`)になるため`CALL`に含めず`ASSERT`という専用命令になっている。Seedの`int()`/`float()`/`string()`/`len()`等のビルトイン関数をIRへ落とす際は、この`CALL`統合方式を踏まえること。`callname`(`CALL`の呼び出し対象)・`value`(値全般)は`%xxx`保持の関数値・メソッド値に加えて`@xxx`(パッケージレベル変数)・`$N`/`&N`(パラメータ・クロージャー引数)・`!xxx`/`?xxx`(関数そのものを呼ばずに値として渡す)も許容するよう拡張されたが、Seedはまだ第一級関数を持たないためこの拡張も未使用。
 
 ### オペランドカテゴリ・Kind
 
@@ -148,7 +151,7 @@ amivm hello.ir -o hello.go -i xxrt=yourmodule/xxrt
 
 - **`null`とベース値**: 各Seedスカラー変数を「値+`_isset`という付随bool」のペアとしてコード生成する(`internal/codegen`)。通常の読み取りは`_isset`を一切見ない(Goのゼロ値がSeedのベース値と全型で一致するため)。`isnull()`と`null`代入(値もベース値へリセットする)だけが`_isset`に触れる。配列は`_isset`を持たない(下記参照)
 - **配列はGoスライスにコンパイル**(`SLTYPE`+`SLMAKE`。Goの固定長配列型`[N]T`は不使用): `Int[size]`のようにサイズが実行時変数になり得るため、コンパイル時定数を要求するGo配列型では表現できない。「固定長」の性質はSeedが一切resizeを生成しないことで保証する。配列は`_isset`を持たない(宣言時に`SLMAKE`で必ず具体的な値が入るため、「未代入」状態が存在しない)
-- **配列の要素数不一致規則**(4節): 配列リテラルの代入・再代入・関数戻り値の代入のいずれでも、対象を`SLMAKE`で新しく確保し直してから、各要素を実行時境界チェック付きで`ASET`する(`LT`+`IF`+`GOTO`で1要素ごとにガード)。パディングは「ガードでスキップされた添字がSLMAKE直後のゼロ値のまま」という形で実現される。関数戻り値のように要素数がコンパイル時に分からない場合は、`len()`呼び出し+ランタイムループでコピーする(`internal/codegen/array.go`)
+- **配列の要素数不一致規則**(4節): 配列リテラルの代入・再代入・関数戻り値の代入のいずれでも、対象を`SLMAKE`で新しく確保し直してから、各要素を実行時境界チェック付きで`ASET`する(`LT`+`IF`+`ENDIF`で1要素ごとにガード)。パディングは「ガードでスキップされた添字がSLMAKE直後のゼロ値のまま」という形で実現される。関数戻り値のように要素数がコンパイル時に分からない場合は、`len()`呼び出し+ランタイムの`LOOP`でコピーする(`internal/codegen/array.go`)
 - **配列の参照渡し**(7節): 配列パラメータはGoスライスの値渡しをそのまま使う(コピーしない)。Goのスライスヘッダは値渡しでも同じ裏付け配列を指すため、要素への`ASET`/`AGET`は呼び出し元にそのまま反映される。関数内でパラメータ自体を丸ごと再代入(`SLMAKE`)しても呼び出し元には反映されない(スコープ外の挙動として未対応。仕様の例では要求されていない)
 - **`main`の特別扱い**: Seedの`main(String[] args) Int`はGoの`func main()`(引数・戻り値なし)と非互換なため、ユーザーの`main`は内部的に`!seed_main`という別関数として出力し、実際の`!main`は`os.Args`を渡して`!seed_main`を呼び、戻り値を`os.Exit()`する薄いラッパーとして生成する。`main`という関数名の直接呼び出し禁止と、`seed_main`という名前のユーザー定義関数の禁止は、いずれもSeed側の意味検査(`internal/sema`)で保証する
 - **`+`演算子の型分岐**(5節): `Int+Int`→`ADD`、`Float+Float`→`ADD`、`String+String`→`CONCAT`と、Seedの`+`は演算対象の型によって生成するIR命令自体が変わる。異なる型同士の`+`はSeedの型チェック段階で弾く(amivm側は関与しない)。単項マイナスに対応するAMIVM-IR命令が無いため、`-x`は`SUB tmp 0 x`として生成する
@@ -158,6 +161,7 @@ amivm hello.ir -o hello.go -i xxrt=yourmodule/xxrt
 - **`seedrt`の配布方法**: `seedrt`パッケージ自身の`.go`ファイルを`go:embed`で`seedrt`パッケージに埋め込み(`seedrt/embed.go`)、`seed build`実行時にスクラッチビルド用ディレクトリ配下の`seedrt/`へコピーしてから`amivm`の`-i seedrt=seedbuild/seedrt`で解決する。これにより生成コードの`import "seedrt"`は、`seed`バイナリがどこでビルド・実行されても常にローカルに解決できる(ネットワークアクセスや実モジュール依存が不要)
 - **CLIコマンド構成**: `seed <build|run|emit-ir|emit-go|help> [-o file] [-v] <file.seed>`。`build`/`emit-ir`/`emit-go`はパイプラインの異なる段階(実行ファイル/AMIVM-IR/Goソース)で止めて出力するだけの違いで、共通ロジックは`cmd/seed/build.go`の`compileToIR`→`compileToGo`→`compileToBinary`という3段の関数に分けて実装している(各コマンドは必要な段までしか呼ばない)。`-v`は生成されたIR・amivm自身の`-v`トレース(型チェック過程+最終Goコード)を標準出力に流すだけで、amivmの`-v`を素通しする形に倣っている
 - **`seed`自体の配布は`go install`のみ**(amivmと同じ方針): `go.mod`のモジュールパスは`github.com/amisonnet8/seed`(実リポジトリのパスと一致させる必要がある。`go install`はVCS経由でモジュールを解決するため、パスなしの`module seed`のようなプレースホルダー名では動かない)。Seedのビルドは最終的に必ず`go build`を経由するため、エンドユーザーは元々Goツールチェーンを持っている前提になり、バイナリ配布やDocker配布は現時点では採用していない(将来必要になれば追加を検討)
+- **`IF`/`LOOP`ブロック化への追随**(commit `253a3fd`): amivmが単一行`IF boolean1 label`を廃止しブロック形の`IF`/`ELIF`/`ELSE`/`ENDIF`と`LOOP`/`BREAK`/`CONTINUE`/`ENDLOOP`に置き換えた(後方互換無し)のに伴い、`internal/codegen`のif/elif/else・while・for-inの生成をLABEL/GOTOの平坦なgoto連鎖から、これらのブロック命令へ全面的に書き換えた(`stmt.go`・`array.go`)。elif連鎖は`ELIF`トークンをそのまま使わず、`ELSE`の中に次の`IF`をネストする形で自前生成している(`ELIF boolean1`は条件オペランドがそのIR行の時点で既に値になっている必要があり、複数命令が要る条件式を「1つ前の節の`}`」と「`else if`」の間に挟む余地が無いため。ネストなら各節の条件計算をそれを守る`ELSE`の中に自然に置け、しかも短絡評価も自動で成立する)。`break`は常に素の`BREAK`(最も内側の`LOOP`を抜ける)。`continue`はwhileでは素の`CONTINUE`で足りる(条件再チェックが`LOOP`本体の先頭にあるため)が、for-inだけは例外で、インデックスの`++`が本体の**後**にあるため素の`CONTINUE`だと`++`を飛ばしてしまう。そこで`LABEL`/`GOTO`(今回の変更後も存置されている)をfor-inの`continue`専用に残し、`++`直前のラベルへ`GOTO`する。ただしラベルは`continue`が無いfor-in本体では誰からも参照されず`go/types`の「declared and not used」で失敗するため、本体の通常フォールスルー末尾にも常に`GOTO`を1本置いてラベルの被参照を保証している(実装時に実際にこの失敗を踏んで発見した。`internal/codegen/stmt.go`のgenForInStmt参照)。VARを関数先頭へホイストする既存の仕組み(旧goto連鎖時代に「gotoが宣言を飛び越える」問題を避けるためのもの)は、ブロック化で理論上は不要になったが、shadowing用の命名スキーム(`scope.go`)が依存しているため変更せず維持している
 
 以降、新しい設計判断が生じた場合もこの節(または実装コード側のコメント)に確定内容を残し、仮説段階のまま放置しないこと。
 

@@ -18,10 +18,11 @@ type varRef struct {
 }
 
 // funcCtx tracks the block-scope chain and name-mangling state for a
-// single Seed function being compiled. AMIVM-IR functions have a flat Go
-// variable namespace (control flow is GOTO-based, not nested Go blocks),
-// so a Seed-level shadowing redeclaration must still get a fresh,
-// function-wide-unique internal name.
+// single Seed function being compiled. Every Seed variable still ends up
+// as one flat Go variable hoisted to the function's top (see codegen.go's
+// package doc) even though if/while/for-in bodies now compile to real
+// nested Go blocks, so a Seed-level shadowing redeclaration must still
+// get a fresh, function-wide-unique internal name.
 type funcCtx struct {
 	scopes  []map[string]varRef
 	used    map[string]int

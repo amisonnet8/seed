@@ -166,12 +166,15 @@ func Int main(String[] args) {
 	}
 }
 
-// TestAllVarsHoistedBeforeControlFlow locks in the fix for a real bug: a
-// VAR declared inside an if/while body, left in place, made a later
-// break/elif-skip GOTO "jump over" it — illegal in Go once that
-// declaration's flat (block-less) scope would otherwise extend past the
-// jump target. Every VAR must come before the function's first
-// LABEL/IF/GOTO.
+// TestAllVarsHoistedBeforeControlFlow locks in a design choice that's
+// still in effect even though the bug it originally guarded against
+// (a break/elif-skip GOTO "jumping over" a VAR declared inline — illegal
+// in Go once that declaration's flat, block-less scope would otherwise
+// extend past the jump target) can no longer happen now that if/while/
+// for-in bodies are real nested Go blocks: every VAR must still come
+// before the function's first LOOP/LABEL/IF/GOTO, because scope.go's
+// shadowing scheme depends on hoisting regardless (see codegen.go's
+// package doc).
 func TestAllVarsHoistedBeforeControlFlow(t *testing.T) {
 	ir := generate(t, `
 func Int main(String[] args) {
@@ -193,22 +196,21 @@ func Int main(String[] args) {
 
 	lastVar := strings.LastIndex(body, "\tVAR\t")
 	firstControl := len(body)
-	for _, instr := range []string{"\tLABEL\t", "\tIF\t", "\tGOTO\t"} {
+	for _, instr := range []string{"\tLOOP\n", "\tLABEL\t", "\tIF\t", "\tGOTO\t"} {
 		if i := strings.Index(body, instr); i != -1 && i < firstControl {
 			firstControl = i
 		}
 	}
 	if lastVar == -1 || firstControl == len(body) || lastVar > firstControl {
-		t.Errorf("expected every VAR to precede the first LABEL/IF/GOTO, got:\n%s", body)
+		t.Errorf("expected every VAR to precede the first LOOP/LABEL/IF/GOTO, got:\n%s", body)
 	}
 }
 
 // TestLoopLocalVarDeclResetsEachIteration checks that a VarDecl inside a
 // while body still emits its SET at its original position (inside the
-// loop), not just the hoisted VAR — otherwise a second iteration would
-// see whatever the first iteration left behind instead of a fresh value.
-// The loop's start/body labels are located structurally (genWhileStmt's
-// known shape) rather than hardcoding label numbers.
+// LOOP...ENDLOOP block), not just the hoisted VAR — otherwise a second
+// iteration would see whatever the first iteration left behind instead
+// of a fresh value.
 func TestLoopLocalVarDeclResetsEachIteration(t *testing.T) {
 	ir := generate(t, `
 func Int main(String[] args) {
@@ -220,39 +222,23 @@ func Int main(String[] args) {
     return 0
 }
 `)
-	lines := strings.Split(ir, "\n")
-
-	var startLabel, bodyLabel string
-	for _, line := range lines {
-		if startLabel == "" && strings.HasPrefix(line, "\tLABEL\t#") {
-			startLabel = strings.TrimPrefix(line, "\tLABEL\t")
-		}
-		if bodyLabel == "" && strings.HasPrefix(line, "\tIF\t") {
-			fields := strings.Split(line, "\t")
-			bodyLabel = fields[len(fields)-1]
-		}
+	loopStart := strings.Index(ir, "\tLOOP\n")
+	loopEnd := strings.Index(ir, "\tENDLOOP\n")
+	if loopStart == -1 || loopEnd == -1 || loopEnd < loopStart {
+		t.Fatalf("could not locate the LOOP...ENDLOOP span in:\n%s", ir)
 	}
-	if startLabel == "" || bodyLabel == "" {
-		t.Fatalf("could not locate the loop's start/body labels in:\n%s", ir)
-	}
-
-	bodyStart := strings.Index(ir, "\tLABEL\t"+bodyLabel)
-	loopBack := strings.Index(ir, "\tGOTO\t"+startLabel)
-	if bodyStart == -1 || loopBack == -1 || loopBack < bodyStart {
-		t.Fatalf("could not locate the loop body span in:\n%s", ir)
-	}
-	if between := ir[bodyStart:loopBack]; !strings.Contains(between, "SET\t%doubled\t") {
-		t.Errorf("expected the loop body to SET %%doubled on every iteration, got:\n%s", between)
+	if body := ir[loopStart:loopEnd]; !strings.Contains(body, "SET\t%doubled\t") {
+		t.Errorf("expected the loop body to SET %%doubled on every iteration, got:\n%s", body)
 	}
 }
 
-// TestBreakContinueTargetLoopLabels locates the while loop's start/end
-// labels structurally from genWhileStmt's known shape (LABEL start; ...;
-// IF cond body; GOTO end; ...; GOTO start; LABEL end) rather than
-// hardcoding label numbers, then checks continue/break each contribute
-// an extra GOTO to the start/end label respectively, beyond the loop's
-// own two (the back-edge to start, and the exit check's GOTO to end).
-func TestBreakContinueTargetLoopLabels(t *testing.T) {
+// TestBreakContinueCompileToNativeLoopInstructions checks that a while
+// loop's own condition-exit check and a user `break`/`continue` inside
+// its body all compile to native BREAK/CONTINUE (genWhileStmt puts the
+// condition check directly at the top of the LOOP, so a native CONTINUE
+// re-checking it is already correct — contrast genForInStmt, which can't
+// use one; see loopInfo's doc).
+func TestBreakContinueCompileToNativeLoopInstructions(t *testing.T) {
 	ir := generate(t, `
 func Int main(String[] args) {
     Int i = 0
@@ -268,26 +254,17 @@ func Int main(String[] args) {
     return 0
 }
 `)
-	lines := strings.Split(ir, "\n")
-
-	var startLabel, endLabel string
-	for i, line := range lines {
-		if startLabel == "" && strings.HasPrefix(line, "\tLABEL\t#") {
-			startLabel = strings.TrimPrefix(line, "\tLABEL\t")
-		}
-		if endLabel == "" && strings.HasPrefix(line, "\tIF\t") {
-			endLabel = strings.TrimPrefix(lines[i+1], "\tGOTO\t")
-		}
+	loopStart := strings.Index(ir, "\tLOOP\n")
+	loopEnd := strings.Index(ir, "\tENDLOOP\n")
+	if loopStart == -1 || loopEnd == -1 || loopEnd < loopStart {
+		t.Fatalf("could not locate the LOOP...ENDLOOP span in:\n%s", ir)
 	}
-	if startLabel == "" || endLabel == "" {
-		t.Fatalf("could not locate the loop's start/end labels in:\n%s", ir)
+	body := ir[loopStart:loopEnd]
+	if got := strings.Count(body, "\tBREAK\n"); got != 2 {
+		t.Errorf("expected 2 BREAKs (the loop's own exit check + user break), got %d in:\n%s", got, body)
 	}
-
-	if got := strings.Count(ir, "\tGOTO\t"+startLabel); got < 2 {
-		t.Errorf("expected continue to add a GOTO to the start label %s (loop back-edge + continue), got %d in:\n%s", startLabel, got, ir)
-	}
-	if got := strings.Count(ir, "\tGOTO\t"+endLabel); got < 2 {
-		t.Errorf("expected break to add a GOTO to the end label %s (exit check + break), got %d in:\n%s", endLabel, got, ir)
+	if got := strings.Count(body, "\tCONTINUE\n"); got != 1 {
+		t.Errorf("expected 1 CONTINUE (user continue), got %d in:\n%s", got, body)
 	}
 }
 
@@ -314,7 +291,7 @@ func Int main(String[] args) {
 }
 
 func TestArrayLiteralElementGuardedByRuntimeBoundsCheck(t *testing.T) {
-	// Each literal element is guarded by its own IF/GOTO against the
+	// Each literal element is guarded by its own IF/ENDIF against the
 	// array's length, not just unconditionally ASET, since the declared
 	// size might be a runtime variable (see array.go's genArrayLitElements).
 	ir := generate(t, `
@@ -396,9 +373,11 @@ func Int main(String[] args) {
 }
 
 // TestForInContinueSkipsToIncrement locks in a real bug fix: `continue`
-// inside a for-in must not jump straight back to the condition check
-// (that's correct for while, but for-in has an implicit index++ between
-// iterations that continue must still run, or the loop never advances).
+// inside a for-in must not compile to a native CONTINUE (that would jump
+// back to the top of the LOOP — correct for while, but for-in has an
+// index++ *after* the body that a native CONTINUE would skip, so the
+// loop would never advance past the first continued element). Instead it
+// must GOTO the label placed right before that increment.
 func TestForInContinueSkipsToIncrement(t *testing.T) {
 	ir := generate(t, `
 func Int main(String[] args) {
@@ -413,31 +392,24 @@ func Int main(String[] args) {
 `)
 	lines := strings.Split(ir, "\n")
 
-	// genForInStmt's shape: LABEL start; ...; IF cmp body; GOTO end;
-	// LABEL body; ...; LABEL continueLabel; ADD idx idx 1; GOTO start.
-	var startLabel, continueLabel string
+	// genForInStmt's shape: LOOP; ...; AGET x a idx; ...; <body>;
+	// LABEL continueLabel; ADD idx idx 1; ENDLOOP.
+	var continueLabel string
 	for i, line := range lines {
-		if startLabel == "" && strings.HasPrefix(line, "\tLABEL\t#") {
-			startLabel = strings.TrimPrefix(line, "\tLABEL\t")
-		}
-		if strings.HasPrefix(line, "\tADD\t") && strings.Contains(line, "\t1") && i > 0 {
-			// the increment's own preceding LABEL is continueLabel
-			for j := i - 1; j >= 0; j-- {
-				if strings.HasPrefix(lines[j], "\tLABEL\t#") {
-					continueLabel = strings.TrimPrefix(lines[j], "\tLABEL\t")
-					break
-				}
-			}
+		if strings.HasPrefix(line, "\tLABEL\t#") && i+1 < len(lines) &&
+			strings.HasPrefix(lines[i+1], "\tADD\t") && strings.HasSuffix(lines[i+1], "\t1") {
+			continueLabel = strings.TrimPrefix(line, "\tLABEL\t")
+			break
 		}
 	}
-	if startLabel == "" || continueLabel == "" {
-		t.Fatalf("could not locate start/continue labels in:\n%s", ir)
+	if continueLabel == "" {
+		t.Fatalf("could not locate the increment's label in:\n%s", ir)
 	}
-	if continueLabel == startLabel {
-		t.Fatalf("continue label must not be the condition-check label itself, got:\n%s", ir)
-	}
-	if !strings.Contains(ir, "\tGOTO\t"+continueLabel) {
+	if !strings.Contains(ir, "\tGOTO\t"+continueLabel+"\n") {
 		t.Errorf("expected continue to GOTO the increment label %s, got:\n%s", continueLabel, ir)
+	}
+	if strings.Contains(ir, "\tCONTINUE\n") {
+		t.Errorf("expected for-in continue to GOTO the increment label, not compile to a native CONTINUE, got:\n%s", ir)
 	}
 }
 

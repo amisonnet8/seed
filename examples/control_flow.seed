@@ -39,5 +39,33 @@ func Int main(String[] args) {
     }
     print(odds)
 
+    // for-in / continue: skip odd elements, concatenate the rest
+    Int[6] nums = {1, 2, 3, 4, 5, 6}
+    String evens = ""
+    for x in nums {
+        if x % 2 != 0 {
+            continue
+        }
+        evens += string(x)
+    }
+    print(evens)
+
+    // elif with more than one branch, nested inside a while body
+    Int k = 0
+    String labels = ""
+    while k < 4 {
+        if k == 0 {
+            labels += "a"
+        } elif k == 1 {
+            labels += "b"
+        } elif k == 2 {
+            labels += "c"
+        } else {
+            labels += "d"
+        }
+        k++
+    }
+    print(labels)
+
     return 0
 }

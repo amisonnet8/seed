@@ -24,24 +24,32 @@
 //     the base value. Arrays don't get an isset companion at all — see
 //     array.go's doc for why.
 //
-// A third, added in Step 4 (see stmt.go's genIfStmt/genWhileStmt):
-// AMIVM-IR has no structured control-flow instructions, only LABEL/GOTO
-// and a conditional "IF cond label" that jumps only when true. Every
-// Seed block (`{ }`) also gets its own funcCtx scope via genBlock, even
-// though the resulting Go variables all still live in one flat function
-// namespace (see scope.go) — this is what makes shadowing inside an
-// if/while/for-in body safe.
+// A third, added in Step 4 and reworked when amivm introduced block-form
+// control flow (see stmt.go's genIfStmt/genWhileStmt/genForInStmt):
+// AMIVM-IR's `IF`/`ELIF`/`ELSE`/`ENDIF` and `LOOP`/`BREAK`/`CONTINUE`/
+// `ENDLOOP` compile straight to Go's own `if`/`else if`/`else` and
+// infinite `for {}`, so Seed's if/elif/else and while/for-in bodies
+// become real nested Go blocks rather than a chain of `LABEL`/`GOTO`.
+// `LABEL`/`GOTO` still exist in AMIVM-IR and are used for exactly one
+// thing: a for-in loop's `continue` must reach its index increment
+// (which sits after the loop body, not at the top the way a native
+// `CONTINUE` would jump to) — see genForInStmt. Every Seed block (`{ }`)
+// still gets its own funcCtx scope via genBlock, even though the
+// resulting Go variables all still live in one flat function namespace
+// (see scope.go) — this is what makes shadowing inside an if/while/
+// for-in body safe.
 //
-// A fourth, forced by the third: since every Seed variable (and every
-// expression temp) ends up as a flat `var` in one Go function body with
-// no enclosing braces, a forward jump that skips a `VAR` — an `elif`
-// chain skipping a later clause's body, a `break` jumping past the rest
-// of a loop body — trips Go's "goto jumps over variable declaration"
-// rule the moment that skipped body declares anything, which if/while
-// bodies routinely do. So funcGen hoists every VAR to the top of the
-// function (see decls/newTemp below) and never emits one inline; only
-// the SET that actually assigns a value stays at its original position.
-// A declaration with no initializer therefore still needs a SET — see
+// A fourth, kept from Step 4 even though it's no longer strictly
+// required: funcGen still hoists every VAR to the top of the function
+// (see decls/newTemp below) and never emits one inline; only the SET
+// that actually assigns a value stays at its original position. Now
+// that if/while/for-in bodies are real Go blocks, a `VAR` declared
+// inline inside one would be perfectly safe on its own — but hoisting is
+// kept anyway because scope.go's shadowing scheme (a Seed-level
+// redeclaration always gets a fresh, function-wide-unique internal name)
+// already depends on it, and reworking that alongside the control-flow
+// rewrite would widen this change well beyond what amivm's update
+// requires. A declaration with no initializer still needs a SET — see
 // stmt.go's genVarDecl resetting to `null` — so that re-running the same
 // declaration on a later loop iteration still resets the variable,
 // instead of silently keeping whatever the previous iteration left in
@@ -288,7 +296,7 @@ type funcGen struct {
 	sigs      map[string]funcSig
 	retType   *ast.Type // this function's return type, nil if it has none; see stmt.go's genReturnValue
 	labelSeq  int
-	loopStack []loopLabels
+	loopStack []loopInfo
 }
 
 // varDecl is one hoisted VAR line, emitted at the top of the function.
@@ -297,14 +305,19 @@ type varDecl struct {
 	IRType string
 }
 
-// loopLabels is the pair of labels a while/for-in loop pushes for
-// break/continue to target. For while, Continue re-checks the condition
-// directly; for-in instead points Continue at its index-increment step
-// (see stmt.go's genForInStmt) so `continue` doesn't skip advancing to
-// the next element.
-type loopLabels struct {
-	Continue string
-	Break    string
+// loopInfo records how `continue` must be compiled for the currently
+// enclosing loop (see stmt.go's genWhileStmt/genForInStmt). `break`
+// always compiles to a native BREAK regardless: it always targets the
+// nearest enclosing LOOP, which is exactly the loop genBreakStmt should
+// exit. `continue` is native CONTINUE too when ContinueLabel is empty
+// (while: the condition check sits at the very top of the LOOP body, so
+// jumping back there is already correct). A for-in loop instead sets
+// ContinueLabel to the label placed right before its index increment,
+// because that increment sits *after* the loop body — a native CONTINUE
+// would jump back to the top of the LOOP and re-check the condition
+// without ever advancing the index, looping forever on the same element.
+type loopInfo struct {
+	ContinueLabel string
 }
 
 func (g *funcGen) emit(format string, args ...any) {
@@ -333,17 +346,30 @@ func (g *funcGen) newLabel() string {
 	return fmt.Sprintf("L%d", g.labelSeq)
 }
 
-func (g *funcGen) pushLoop(continueLabel, breakLabel string) {
-	g.loopStack = append(g.loopStack, loopLabels{Continue: continueLabel, Break: breakLabel})
+func (g *funcGen) pushLoop(info loopInfo) {
+	g.loopStack = append(g.loopStack, info)
 }
 
 func (g *funcGen) popLoop() {
 	g.loopStack = g.loopStack[:len(g.loopStack)-1]
 }
 
-func (g *funcGen) currentLoop() (loopLabels, bool) {
+func (g *funcGen) currentLoop() (loopInfo, bool) {
 	if len(g.loopStack) == 0 {
-		return loopLabels{}, false
+		return loopInfo{}, false
 	}
 	return g.loopStack[len(g.loopStack)-1], true
+}
+
+// emitBreakUnless emits the "stop the loop" half of a while/for-in loop's
+// per-iteration condition check (see genWhileStmt/genForInStmt) and the
+// synthetic runtime copy loop in array.go's genArrayCopyFromSource: cond
+// must already be computed, and this negates it and BREAKs the nearest
+// enclosing LOOP when it's false.
+func (g *funcGen) emitBreakUnless(cond string) {
+	notCond := g.newTemp("^bool")
+	g.emit("\tNOT\t%s\t%s\n", notCond, cond)
+	g.emit("\tIF\t%s\n", notCond)
+	g.emit("\tBREAK\n")
+	g.emit("\tENDIF\n")
 }

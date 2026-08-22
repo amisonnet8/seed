@@ -52,112 +52,100 @@ func genStmt(g *funcGen, s ast.Stmt) error {
 	}
 }
 
-// genIfStmt compiles an if/elif/else chain to a sequence of conditional
-// jumps followed by the bodies themselves (see codegen.go's package doc).
-// Each clause's condition is evaluated immediately before its own IF, so
-// a taken jump skips every later condition's instructions entirely —
-// giving the usual short-circuit "elif conditions run only if earlier
-// ones were false" behavior for free.
-//
-//	<cond1 instrs>; IF cond1 body1
-//	<cond2 instrs>; IF cond2 body2
-//	...
-//	GOTO else-or-end
-//	LABEL body1; ...; GOTO end
-//	LABEL body2; ...; GOTO end
-//	LABEL else; ...; GOTO end   (only if there's an `else`)
-//	LABEL end
+// genIfStmt compiles an if/elif/else chain to nested IF/ELSE/ENDIF blocks
+// (see codegen.go's package doc): clauses[0]'s condition is computed and
+// checked first; every later clause (and the final else, if any) is
+// nested inside its ELSE body. This mirrors exactly how amivm itself
+// desugars a flat IF/ELIF/ELSE/ENDIF into nested `ast.IfStmt.Else`
+// chains, but building the nesting ourselves means each later clause's
+// condition instructions can be emitted right where they belong — inside
+// the ELSE that guards them — so a clause's condition is only ever
+// computed once every earlier one has been checked false, giving the
+// usual short-circuit "elif conditions run only if earlier ones were
+// false" behavior for free (an `ELIF` token can't offer this on its own:
+// its condition operand must already be a value by the time that line is
+// reached, with nowhere to place multi-instruction condition computation
+// in between the preceding clause's `}` and its own `else if`).
 func genIfStmt(g *funcGen, stmt *ast.IfStmt) error {
-	endLabel := g.newLabel()
-	bodyLabels := make([]string, len(stmt.Clauses))
+	return genIfClauses(g, stmt.Clauses, stmt.Else)
+}
 
-	for i, clause := range stmt.Clauses {
-		cond, err := genValue(g, clause.Cond)
-		if err != nil {
+func genIfClauses(g *funcGen, clauses []ast.IfClause, elseBody []ast.Stmt) error {
+	if len(clauses) == 0 {
+		return genBlock(g, elseBody)
+	}
+	cond, err := genValue(g, clauses[0].Cond)
+	if err != nil {
+		return err
+	}
+	g.emit("\tIF\t%s\n", cond)
+	if err := genBlock(g, clauses[0].Body); err != nil {
+		return err
+	}
+	rest := clauses[1:]
+	if len(rest) > 0 || elseBody != nil {
+		g.emit("\tELSE\n")
+		if err := genIfClauses(g, rest, elseBody); err != nil {
 			return err
 		}
-		bodyLabels[i] = g.newLabel()
-		g.emit("\tIF\t%s\t#%s\n", cond, bodyLabels[i])
 	}
-
-	var elseLabel string
-	if stmt.Else != nil {
-		elseLabel = g.newLabel()
-		g.emit("\tGOTO\t#%s\n", elseLabel)
-	} else {
-		g.emit("\tGOTO\t#%s\n", endLabel)
-	}
-
-	for i, clause := range stmt.Clauses {
-		g.emit("\tLABEL\t#%s\n", bodyLabels[i])
-		if err := genBlock(g, clause.Body); err != nil {
-			return err
-		}
-		g.emit("\tGOTO\t#%s\n", endLabel)
-	}
-
-	if stmt.Else != nil {
-		g.emit("\tLABEL\t#%s\n", elseLabel)
-		if err := genBlock(g, stmt.Else); err != nil {
-			return err
-		}
-		g.emit("\tGOTO\t#%s\n", endLabel)
-	}
-
-	g.emit("\tLABEL\t#%s\n", endLabel)
+	g.emit("\tENDIF\n")
 	return nil
 }
 
-// genWhileStmt compiles a while loop as: check the condition, jump into
-// the body if true or out past the loop if false, and jump back to the
-// check after the body runs.
+// genWhileStmt compiles a while loop as a real LOOP block: the condition
+// is (re-)computed at the very top of the body on every pass, and
+// emitBreakUnless BREAKs out the moment it's false.
 //
-//	LABEL start; <cond instrs>; IF cond body; GOTO end
-//	LABEL body; ...; GOTO start
-//	LABEL end
+//	LOOP
+//		<cond instrs>; NOT notCond cond; IF notCond BREAK ENDIF
+//		<body>
+//	ENDLOOP
 //
-// `continue` targets start (re-check the condition) and `break` targets
-// end; see genBreakStmt/genContinueStmt.
+// `continue` inside the body is therefore already correct as a native
+// CONTINUE — it jumps back to the top of the LOOP, exactly where the
+// condition re-check lives — and `break` as a native BREAK; see
+// genBreakStmt/genContinueStmt. ContinueLabel is left empty in the
+// pushed loopInfo to select that native-CONTINUE path (contrast
+// genForInStmt, which can't use it).
 func genWhileStmt(g *funcGen, stmt *ast.WhileStmt) error {
-	startLabel := g.newLabel()
-	bodyLabel := g.newLabel()
-	endLabel := g.newLabel()
-
-	g.emit("\tLABEL\t#%s\n", startLabel)
+	g.emit("\tLOOP\n")
 	cond, err := genValue(g, stmt.Cond)
 	if err != nil {
 		return err
 	}
-	g.emit("\tIF\t%s\t#%s\n", cond, bodyLabel)
-	g.emit("\tGOTO\t#%s\n", endLabel)
-	g.emit("\tLABEL\t#%s\n", bodyLabel)
+	g.emitBreakUnless(cond)
 
-	g.pushLoop(startLabel, endLabel)
+	g.pushLoop(loopInfo{})
 	err = genBlock(g, stmt.Body)
 	g.popLoop()
 	if err != nil {
 		return err
 	}
 
-	g.emit("\tGOTO\t#%s\n", startLabel)
-	g.emit("\tLABEL\t#%s\n", endLabel)
+	g.emit("\tENDLOOP\n")
 	return nil
 }
 
 // genForInStmt compiles `for x in a { ... }` (seed_spec.md §6) as an
-// index-counted loop over len(a):
+// index-counted LOOP over len(a):
 //
 //	CALL lenOp : ?len a; SET idxOp 0
-//	LABEL start; LT cmp idxOp lenOp; IF cmp body; GOTO end
-//	LABEL body; AGET x a idxOp; SET x_isset true; ...; LABEL continue
-//	ADD idxOp idxOp 1; GOTO start
-//	LABEL end
+//	LOOP
+//		LT cmp idxOp lenOp; NOT notCmp cmp; IF notCmp BREAK ENDIF
+//		AGET x a idxOp; SET x_isset true
+//		<body>
+//		GOTO continue; LABEL continue; ADD idxOp idxOp 1
+//	ENDLOOP
 //
-// Unlike genWhileStmt, `continue` cannot target start directly: start
-// only re-checks the condition, and skipping straight to it would skip
-// the idxOp++ step, looping forever on the same element. So continue
-// targets a dedicated label positioned right before that increment,
-// which the body's normal (non-break/continue) fallthrough also reaches.
+// Unlike genWhileStmt, `continue` cannot be a native CONTINUE: that would
+// jump back to the top of the LOOP (the condition re-check) and skip the
+// idxOp++ step below it, looping forever on the same element. So
+// genContinueStmt instead GOTOs a dedicated label placed right before
+// that increment (still valid AMIVM-IR/Go — LABEL/GOTO were kept
+// alongside the new block instructions specifically for jumps structured
+// control flow can't express directly), which the body's normal
+// (non-break/continue) fallthrough also reaches; see loopInfo's doc.
 //
 // x's scope spans the loop var and the body together in a single funcCtx
 // scope (matching sema's checkForInStmt), not genBlock's usual per-block
@@ -179,17 +167,12 @@ func genForInStmt(g *funcGen, stmt *ast.ForInStmt) error {
 	idxOp := g.newTemp("^int")
 	g.emit("\tSET\t%s\t0\n", idxOp)
 
-	startLabel := g.newLabel()
-	bodyLabel := g.newLabel()
 	continueLabel := g.newLabel()
-	endLabel := g.newLabel()
 
-	g.emit("\tLABEL\t#%s\n", startLabel)
+	g.emit("\tLOOP\n")
 	cmp := g.newTemp("^bool")
 	g.emit("\tLT\t%s\t%s\t%s\n", cmp, idxOp, lenOp)
-	g.emit("\tIF\t%s\t#%s\n", cmp, bodyLabel)
-	g.emit("\tGOTO\t#%s\n", endLabel)
-	g.emit("\tLABEL\t#%s\n", bodyLabel)
+	g.emitBreakUnless(cmp)
 
 	g.ctx.push()
 	loopVar, err := g.ctx.declare(stmt.VarName, elemType)
@@ -202,7 +185,7 @@ func genForInStmt(g *funcGen, stmt *ast.ForInStmt) error {
 	g.emit("\tAGET\t%s\t%s\t%s\n", loopVar.ValOp, arrRef.ValOp, idxOp)
 	g.emit("\tSET\t%s\ttrue\n", loopVar.SetOp)
 
-	g.pushLoop(continueLabel, endLabel)
+	g.pushLoop(loopInfo{ContinueLabel: continueLabel})
 	for _, bodyStmt := range stmt.Body {
 		if err := genStmt(g, bodyStmt); err != nil {
 			g.popLoop()
@@ -213,29 +196,42 @@ func genForInStmt(g *funcGen, stmt *ast.ForInStmt) error {
 	g.popLoop()
 	g.ctx.pop()
 
+	// The body's normal (non-break/non-continue) fallthrough needs an
+	// explicit GOTO here too: unlike an ordinary label, `go/types`
+	// rejects a label with no GOTO anywhere targeting it ("declared and
+	// not used"), and a for-in body with no `continue` in it would
+	// otherwise leave continueLabel referenced by nothing at all.
 	g.emit("\tGOTO\t#%s\n", continueLabel)
 	g.emit("\tLABEL\t#%s\n", continueLabel)
 	g.emit("\tADD\t%s\t%s\t1\n", idxOp, idxOp)
-	g.emit("\tGOTO\t#%s\n", startLabel)
-	g.emit("\tLABEL\t#%s\n", endLabel)
+	g.emit("\tENDLOOP\n")
 	return nil
 }
 
+// genBreakStmt always compiles to a native BREAK: it targets the nearest
+// enclosing LOOP regardless of whether that loop is a while or a for-in
+// (see loopInfo's doc).
 func genBreakStmt(g *funcGen, stmt *ast.BreakStmt) error {
-	loop, ok := g.currentLoop()
-	if !ok {
+	if _, ok := g.currentLoop(); !ok {
 		return fmt.Errorf("line %d: break outside of a loop", stmt.Line)
 	}
-	g.emit("\tGOTO\t#%s\n", loop.Break)
+	g.emit("\tBREAK\n")
 	return nil
 }
 
+// genContinueStmt compiles to a native CONTINUE, unless the enclosing
+// loop recorded a ContinueLabel to GOTO instead (a for-in loop's index
+// increment; see loopInfo's doc and genForInStmt).
 func genContinueStmt(g *funcGen, stmt *ast.ContinueStmt) error {
 	loop, ok := g.currentLoop()
 	if !ok {
 		return fmt.Errorf("line %d: continue outside of a loop", stmt.Line)
 	}
-	g.emit("\tGOTO\t#%s\n", loop.Continue)
+	if loop.ContinueLabel != "" {
+		g.emit("\tGOTO\t#%s\n", loop.ContinueLabel)
+		return nil
+	}
+	g.emit("\tCONTINUE\n")
 	return nil
 }
 

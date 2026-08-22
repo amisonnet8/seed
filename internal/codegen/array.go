@@ -107,8 +107,8 @@ func genGlobalArrayVarDecl(g *funcGen, decls *strings.Builder, decl *ast.VarDecl
 //
 // boundOp might be a runtime value (an array declared `Type[n]` for a
 // variable n), so "does index i fit" can't always be decided at codegen
-// time; each element is therefore guarded by its own runtime comparison
-// rather than assuming the literal fits.
+// time; each element is therefore guarded by its own runtime `IF fits
+// ASET ENDIF`, rather than assuming the literal fits.
 func genArrayLitElements(g *funcGen, ref varRef, boundOp string, lit *ast.ArrayLit) error {
 	for i, elem := range lit.Elems {
 		v, err := genValue(g, elem)
@@ -117,12 +117,9 @@ func genArrayLitElements(g *funcGen, ref varRef, boundOp string, lit *ast.ArrayL
 		}
 		fits := g.newTemp("^bool")
 		g.emit("\tLT\t%s\t%d\t%s\n", fits, i, boundOp)
-		setLabel, skipLabel := g.newLabel(), g.newLabel()
-		g.emit("\tIF\t%s\t#%s\n", fits, setLabel)
-		g.emit("\tGOTO\t#%s\n", skipLabel)
-		g.emit("\tLABEL\t#%s\n", setLabel)
+		g.emit("\tIF\t%s\n", fits)
 		g.emit("\tASET\t%s\t%d\t%s\n", ref.ValOp, i, v)
-		g.emit("\tLABEL\t#%s\n", skipLabel)
+		g.emit("\tENDIF\n")
 	}
 	return nil
 }
@@ -149,26 +146,26 @@ func genArrayReassign(g *funcGen, ref varRef, value ast.Expr) error {
 // genArrayReassign both do this before calling genArrayInitFrom, which
 // dispatches here). This copies min(targetLenOp, len(sourceOp)) elements,
 // implementing the truncate/pad rule the same way genArrayLitElements
-// does for a literal, but via a genuine runtime loop since the source's
-// element count isn't known at codegen time the way a literal's is.
+// does for a literal, but via a genuine runtime LOOP since the source's
+// element count isn't known at codegen time the way a literal's is. This
+// loop is pure codegen machinery with no Seed-level body running inside
+// it, so unlike genWhileStmt/genForInStmt it needs no pushLoop/popLoop —
+// there's no user break/continue that could target it.
 func genArrayCopyFromSource(g *funcGen, ref varRef, targetLenOp, sourceOp string) error {
 	srcLenOp := g.newTemp("^int")
 	g.emit("\tCALL\t%s\t:\t?len\t%s\n", srcLenOp, sourceOp)
 
 	idxOp := g.newTemp("^int")
 	g.emit("\tSET\t%s\t0\n", idxOp)
-	startLabel, bodyLabel, endLabel := g.newLabel(), g.newLabel(), g.newLabel()
 
-	g.emit("\tLABEL\t#%s\n", startLabel)
+	g.emit("\tLOOP\n")
 	underTarget := g.newTemp("^bool")
 	g.emit("\tLT\t%s\t%s\t%s\n", underTarget, idxOp, targetLenOp)
 	underSrc := g.newTemp("^bool")
 	g.emit("\tLT\t%s\t%s\t%s\n", underSrc, idxOp, srcLenOp)
 	cond := g.newTemp("^bool")
 	g.emit("\tAND\t%s\t%s\t%s\n", cond, underTarget, underSrc)
-	g.emit("\tIF\t%s\t#%s\n", cond, bodyLabel)
-	g.emit("\tGOTO\t#%s\n", endLabel)
-	g.emit("\tLABEL\t#%s\n", bodyLabel)
+	g.emitBreakUnless(cond)
 
 	elemIRType, err := seedTypeToIR(ast.Type{Name: ref.Type.Name})
 	if err != nil {
@@ -178,8 +175,7 @@ func genArrayCopyFromSource(g *funcGen, ref varRef, targetLenOp, sourceOp string
 	g.emit("\tAGET\t%s\t%s\t%s\n", elemTmp, sourceOp, idxOp)
 	g.emit("\tASET\t%s\t%s\t%s\n", ref.ValOp, idxOp, elemTmp)
 	g.emit("\tADD\t%s\t%s\t1\n", idxOp, idxOp)
-	g.emit("\tGOTO\t#%s\n", startLabel)
-	g.emit("\tLABEL\t#%s\n", endLabel)
+	g.emit("\tENDLOOP\n")
 	return nil
 }
 
