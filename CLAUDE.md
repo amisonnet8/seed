@@ -24,7 +24,8 @@ Goコード (.go)
 |---|---|
 | `seed_spec.md` | **Seed言語仕様。唯一の正確な仕様。** 字句規則・型・演算子・制御構文・関数・ビルトイン関数などを定義。実装と齟齬が出たら、まず`seed_spec.md`の記述を疑い、仕様として確定してからコードを直すこと |
 | `README.md` / `README_ja.md` | GitHub向けの導入ドキュメント(英語版/日本語版)。インストール方法(`go install`)・CLIコマンド一覧・簡単な例を掲載。amivmの README と対になる構成 |
-| `amivm/` | 参照用にローカルへ置かれている amivm リポジトリのクローン(commit `8d2bf04`, https://github.com/amisonnet8/amivm )。**Seedのリポジトリの一部ではない。** amivmはSeedから見て「外部CLIツール」であり、`go install`で`PATH`に配置して呼び出す(下記参照)。このディレクトリは仕様を読むための参照物であり、Seed側のビルド成果物やimportパスがここに依存することがあってはならない |
+| `amivm/` | 参照用にローカルへ置かれている amivm リポジトリのクローン(commit `253a3fd`, https://github.com/amisonnet8/amivm )。**Seedのリポジトリの一部ではない。** amivmはSeedから見て「外部CLIツール」であり、`go install`で`PATH`に配置して呼び出す(下記参照)。このディレクトリは仕様を読むための参照物であり、Seed側のビルド成果物やimportパスがここに依存することがあってはならない |
+| `seed_implementation_notes.md` | AMIVM-IRを生成するフロントエンドを実装する際の実地の知見(踏んだ地雷・確立したパターン)をまとめたメモ。Seed自身の言語仕様や設計判断ではなく、「次にAMIVM上で別の言語を実装する人/AI」向けの申し送りという位置づけ。**この種の実装知見はamivm本体のリポジトリではなく、各言語(フロントエンド)側のリポジトリに置く運用**とし、Seedのものは本ファイルに集約する |
 | 本ファイル(`CLAUDE.md`) | Seedプロジェクトの規約・AIによる開発支援のための注意点 |
 
 ## amivmのインストール・呼び出し方
@@ -173,6 +174,7 @@ Step1〜8で実装済みの実際の構成。
 seed/
   seed_spec.md         Seed言語仕様(唯一の正確な仕様)
   CLAUDE.md            本ファイル
+  seed_implementation_notes.md  AMIVM上への実装知見メモ(次にAMIVM上で別言語を作る人/AI向け)
   README.md / README_ja.md  導入ドキュメント
   go.mod               module github.com/amisonnet8/seed
   Makefile             build/install/test/fmt/vet/tidy/clean タスク
@@ -199,3 +201,4 @@ seed/
 3. Seedの意味検査(型チェック等)は、amivmに渡す前にSeed側で完了させる。amivmの`go/types`エラーをユーザー向けエラーとしてそのまま出さない
 4. 新しい構文・ビルトイン関数を実装したら、対応するサンプルSeedプログラムを`examples/`に追加し、生成されたIR・Goコード・実行結果まで確認する
 5. amivm本体の仕様が更新された場合(`amivm/docs/amivm_spec.md`または最新リポジトリを再確認)、本ファイルの「AMIVM-IRの書き方」節が古くなっていないか照合し、必要なら更新する
+6. IRの生成方式を大きく書き換えた・「IR的には正しそうなのにgo buildで初めて発覚した」類のバグを踏んだなど、次にAMIVM上で別言語を実装する人/AIへ申し送るべき知見が生まれたら、`seed_implementation_notes.md`にも反映する
