@@ -24,7 +24,7 @@ Goコード (.go)
 |---|---|
 | `seed_spec.md` | **Seed言語仕様。唯一の正確な仕様。** 字句規則・型・演算子・制御構文・関数・ビルトイン関数などを定義。実装と齟齬が出たら、まず`seed_spec.md`の記述を疑い、仕様として確定してからコードを直すこと |
 | `README.md` / `README_ja.md` | GitHub向けの導入ドキュメント(英語版/日本語版)。インストール方法(`go install`)・CLIコマンド一覧・簡単な例を掲載。amivmの README と対になる構成 |
-| `amivm/` | 参照用にローカルへ置かれている amivm リポジトリのクローン(commit `51c5207`, https://github.com/amisonnet8/amivm )。**Seedのリポジトリの一部ではない。** amivmはSeedから見て「外部CLIツール」であり、`go install`で`PATH`に配置して呼び出す(下記参照)。このディレクトリは仕様を読むための参照物であり、Seed側のビルド成果物やimportパスがここに依存することがあってはならない |
+| `amivm/` | 参照用にローカルへ置かれている amivm リポジトリのクローン(commit `8d2bf04`, https://github.com/amisonnet8/amivm )。**Seedのリポジトリの一部ではない。** amivmはSeedから見て「外部CLIツール」であり、`go install`で`PATH`に配置して呼び出す(下記参照)。このディレクトリは仕様を読むための参照物であり、Seed側のビルド成果物やimportパスがここに依存することがあってはならない |
 | 本ファイル(`CLAUDE.md`) | Seedプロジェクトの規約・AIによる開発支援のための注意点 |
 
 ## amivmのインストール・呼び出し方
@@ -52,7 +52,7 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 
 ## AMIVM-IRの書き方(唯一の正確な仕様)
 
-以下はamivmの`docs/amivm_spec.md`(commit `51c5207`時点)からの転記。**Seedのコード生成部がAMIVM-IRを出力する際は、この命令セット・カテゴリ・Kind分類に厳密に従うこと。** amivm本体のバージョンを上げた際は、`amivm/docs/amivm_spec.md`(または最新のamivmリポジトリ)と齟齬がないか確認すること。
+以下はamivmの`docs/amivm_spec.md`(commit `8d2bf04`時点)からの転記。**Seedのコード生成部がAMIVM-IRを出力する際は、この命令セット・カテゴリ・Kind分類に厳密に従うこと。** amivm本体のバージョンを上げた際は、`amivm/docs/amivm_spec.md`(または最新のamivmリポジトリ)と齟齬がないか確認すること。
 
 ### 制約・前提条件
 
