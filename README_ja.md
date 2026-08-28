@@ -1,5 +1,7 @@
 # Seed
 
+[![test](https://github.com/amisonnet8/seed/actions/workflows/test.yml/badge.svg)](https://github.com/amisonnet8/seed/actions/workflows/test.yml)
+
 AMIVM-IRを経由してGoソースコードへコンパイルする、Go実装のプログラミング言語です。
 
 > [English README is here](README.md)
@@ -94,6 +96,8 @@ seed_spec.md         Seed言語仕様(唯一の正確な仕様)
 CLAUDE.md            AIによる開発支援のためのプロジェクト規約
 seed_implementation_notes.md  AMIVM-IRを生成するフロントエンド実装の知見メモ。
                       次にamivm上で別言語を実装する人/AI向け
+Makefile              ビルド・テスト・クリーンアップ用タスク(`make help`で一覧表示)
+.github/workflows/test.yml  CI: push/PR時にgofmt/go vet/go test/make test-examplesを実行
 LICENSE              MIT
 ```
 

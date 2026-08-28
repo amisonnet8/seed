@@ -39,6 +39,8 @@ make install   # go install ./cmd/amivm — $GOBIN(未設定なら$GOPATH/bin)�
 
 Seed側のビルドスクリプトは、`amivm`が既に`PATH`にある前提で呼び出せばよい。
 
+**amivmリポジトリはPublic化されている**ため、GitHub Actions上でも認証情報無しに`go install github.com/amisonnet8/amivm/cmd/amivm@latest`でインストールできる(`.github/workflows/test.yml`参照)。これにより、これまで手元でしか検証できなかった「実際に`amivm`にかけて`go build`まで通す」確認(開発の進め方2.参照)をCIで毎回自動実行できる。
+
 ### CLIコマンド仕様
 
 ```
@@ -188,7 +190,8 @@ seed/
   README.md / README_ja.md  導入ドキュメント
   LICENSE               MIT
   go.mod               module github.com/amisonnet8/seed
-  Makefile             build/install/test/fmt/vet/tidy/clean タスク
+  Makefile             build/install/test/test-examples/fmt/vet/tidy/clean タスク
+  .github/workflows/test.yml  CI: push/PR時にgofmt/go vet/go test/make test-examplesを実行
   cmd/seed/
     main.go             CLIエントリポイント(build/run/emit-ir/emit-go/help のディスパッチ)
     build.go             compileToIR → compileToGo → compileToBinary の3段パイプライン
@@ -213,6 +216,7 @@ seed/
 4. 新しい構文・ビルトイン関数を実装したら、対応するサンプルSeedプログラムを`examples/`に追加し、生成されたIR・Goコード・実行結果まで確認する
 5. amivm本体の仕様が更新された場合(`amivm/amivm_spec.md`または最新リポジトリを再確認)、本ファイルの「AMIVM-IRの書き方」節が古くなっていないか照合し、必要なら更新する
 6. IRの生成方式を大きく書き換えた・「IR的には正しそうなのにgo buildで初めて発覚した」類のバグを踏んだなど、次にAMIVM上で別言語を実装する人/AIへ申し送るべき知見が生まれたら、`seed_implementation_notes.md`にも反映する
+7. `.github/workflows/test.yml`によりpush/PR時に`gofmt`・`go vet`・`go test`・`make test-examples`(`examples/`配下を`amivm`→`go build`→実行まで通す統合テスト)がGitHub Actionsで自動実行される。ローカルでも`make test-examples`(`amivm`が`PATH`にある前提)を実行してからpushすること(CIで初めて失敗に気づくのは避ける)
 
 ## AIによる開発支援時の注意点
 

@@ -4,7 +4,7 @@ BINARY := seed
 PKG    := ./cmd/seed
 GO     := go
 
-.PHONY: all build install test fmt vet tidy clean help
+.PHONY: all build install test test-examples fmt vet tidy clean help
 
 all: build ## デフォルトターゲット(ビルドのみ)
 
@@ -16,6 +16,17 @@ install: ## seedバイナリをGOBIN($GOPATH/bin)へインストールする
 
 test: ## go testで全パッケージのユニットテストを実行する
 	$(GO) test ./...
+
+test-examples: build ## examples/配下の全.seedファイルをamivm→go buildまで通し実行する(amivmがPATHにある前提)
+	@set -e; \
+	tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	for src in examples/*.seed; do \
+		name=$$(basename "$$src" .seed); \
+		echo "== $$src =="; \
+		./$(BINARY) build -o "$$tmp/$$name" "$$src"; \
+		"$$tmp/$$name"; \
+	done
 
 fmt: ## *.goをgoimportsで整形する
 	goimports -w .
