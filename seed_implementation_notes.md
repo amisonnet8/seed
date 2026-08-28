@@ -1,9 +1,9 @@
 # AMIVM上で言語を実装するときのヒント(Seedの実装から)
 
-> 取り込み元: Seed(`github.com/amisonnet8/seed`, commit `12f68d9`時点)の実装過程で得られた知見。
+> 取り込み元: Seed(`github.com/amisonnet8/seed`, commit `46fb3c0`時点)の実装過程で得られた知見。
 > 次にAMIVM上で別言語(命令セットを全て使う想定)を実装するAI向けの申し送り。
 > Seed自体の言語仕様の話ではなく、**「AMIVM-IRを生成するフロントエンドを書くときに踏む地雷・使える型」の話**に絞っている。
-> 初版はamivm commit `cd972aa`時点の知見だったが、その後amivmが単一行`IF boolean1 label`をブロック形`IF`/`ELIF`/`ELSE`/`ENDIF`・`LOOP`/`BREAK`/`CONTINUE`/`ENDLOOP`へ置き換える大きな変更(`253a3fd`、後方互換無し)を行い、Seedもそれに追随した。本書はその移行で得た知見も反映済み(§2が新規追加分)。
+> 初版はamivm commit `cd972aa`時点の知見だったが、その後amivmが単一行`IF boolean1 label`をブロック形`IF`/`ELIF`/`ELSE`/`ENDIF`・`LOOP`/`BREAK`/`CONTINUE`/`ENDLOOP`へ置き換える大きな変更(`253a3fd`、後方互換無し)を行い、Seedもそれに追随した。本書はその移行で得た知見も反映済み(§2が新規追加分)。さらにamivmはメソッド定義・インターフェース・ジェネリクスに相当する`FUNCM`/`INTYPE`/`GETYPE`等を追加(`020e6bc`)したが、こちらはSeedの言語仕様に対応する機能が無く実装変更は不要だった(§6.6が新規追加分。未検証の手がかりとして記載)。
 
 ## 0. Seedが実証した命令・していない命令
 
@@ -177,7 +177,7 @@ Seedにはこれらを使う言語機能(独自メソッド定義・インター
 - `STTYPE`/`INTYPE`でジェネリクス宣言した型(`Box<T>`等)は、型引数を当てはめないと`type`カテゴリのトークンとして参照できない。`GETYPE typename1 typename2 type1 ...`(`type typename1 = typename2[type1, ...]`)で具体型に別名を付けることで、以降は普通の型として使えるようになる。
 - 実例は`amivm`リポジトリの`examples/19_methval_funcval.ir`・`examples/20_generics_func.ir`・`examples/21_funcm_getype.ir`・`examples/22_intype.ir`を参照。
 
-### 6.6 ビット演算・シフト(`BAND` `BOR` `BXOR` `BCLEAR` `BNOT` `SHL` `SHR`)
+### 6.7 ビット演算・シフト(`BAND` `BOR` `BXOR` `BCLEAR` `BNOT` `SHL` `SHR`)
 
 これは驚きが少ないはず。`ADD`/`SUB`と全く同じ形の2項(`BNOT`のみ単項)演算命令。Seedで確立した「演算子ごとに命令を振り分け、一時変数へ結果を格納する」パターン(`internal/codegen/expr.go`の`genBinary`)がそのまま流用できる。
 
@@ -186,6 +186,8 @@ Seedにはこれらを使う言語機能(独自メソッド定義・インター
 ### 7.1 機能単位の縦切りステップ + 各ステップでamivm+go buildの実地検証必須
 
 Seedは8ステップ(パイプライン疎通→変数/null→演算子→制御構文→配列→関数→ファイルI/O→CLI/配布)に分けて実装した。**§1・§2のバグは、IRのテキストを目で見て「論理的に正しそう」と判断しただけでは絶対に見つからなかった。実際に`amivm`を呼び、生成されたGoコードを`go build`まで通して初めて発覚した。** amivmがブロック形`IF`/`LOOP`を導入した際も、Seed側の書き換えをユニットテストだけで済ませず実際に新しい`amivm`でビルドし直したところ、§2.2の「for-inのcontinueラベルが未使用」バグが実機で初めて見つかった——移行前と全く同じ教訓が、移行後にもそのまま繰り返された。新しい命令カテゴリを1つ実装するたびに、必ず対応する`.seed`(あるいは新言語の)サンプルを書いて`run`まで確認するサイクルを崩さないこと。
+
+この検証は**amivmリポジトリがPublicになれば、そのままCIに自動化できる**。GitHub Actions上で`go install .../amivm/cmd/amivm@latest`し、対象言語のサンプル一式をビルド→実行するステップを1つ足すだけでよい(Seedの`.github/workflows/test.yml`・`make test-examples`参照)。これにより「amivm本体が更新されるたびに、対象言語側が壊れていないかを毎回手で確認する」という運用コストが、push/PRのたびの自動チェックに置き換わる。amivmが非公開のうちは認証情報が無いとCI上で`go install`できないため、この自動化は後回しにせざるを得ない点に注意。
 
 ### 7.2 実際に踏んだバグ(次の言語でも類似バグが起きうる箇所)
 
