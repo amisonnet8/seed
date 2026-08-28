@@ -24,7 +24,7 @@ Goコード (.go)
 |---|---|
 | `seed_spec.md` | **Seed言語仕様。唯一の正確な仕様。** 字句規則・型・演算子・制御構文・関数・ビルトイン関数などを定義。実装と齟齬が出たら、まず`seed_spec.md`の記述を疑い、仕様として確定してからコードを直すこと |
 | `README.md` / `README_ja.md` | GitHub向けの導入ドキュメント(英語版/日本語版)。インストール方法(`go install`)・CLIコマンド一覧・簡単な例を掲載。amivmの README と対になる構成 |
-| `amivm/` | 参照用にローカルへ置かれている amivm リポジトリのクローン(commit `253a3fd`, https://github.com/amisonnet8/amivm )。**Seedのリポジトリの一部ではない。** amivmはSeedから見て「外部CLIツール」であり、`go install`で`PATH`に配置して呼び出す(下記参照)。このディレクトリは仕様を読むための参照物であり、Seed側のビルド成果物やimportパスがここに依存することがあってはならない |
+| `amivm/` | 参照用にローカルへ置かれている amivm リポジトリのクローン(commit `020e6bc`, https://github.com/amisonnet8/amivm )。**Seedのリポジトリの一部ではない。** amivmはSeedから見て「外部CLIツール」であり、`go install`で`PATH`に配置して呼び出す(下記参照)。このディレクトリは仕様を読むための参照物であり、Seed側のビルド成果物やimportパスがここに依存することがあってはならない。仕様書は`docs/`配下ではなくリポジトリ直下に`amivm_spec.md`(唯一の正確な仕様)・`amivm_instruction_spec.md`(設計判断の理由まで含む解説版)として置かれている(旧`docs/`配下からの移動済み) |
 | `seed_implementation_notes.md` | AMIVM-IRを生成するフロントエンドを実装する際の実地の知見(踏んだ地雷・確立したパターン)をまとめたメモ。Seed自身の言語仕様や設計判断ではなく、「次にAMIVM上で別の言語を実装する人/AI」向けの申し送りという位置づけ。**この種の実装知見はamivm本体のリポジトリではなく、各言語(フロントエンド)側のリポジトリに置く運用**とし、Seedのものは本ファイルに集約する |
 | 本ファイル(`CLAUDE.md`) | Seedプロジェクトの規約・AIによる開発支援のための注意点 |
 
@@ -42,25 +42,27 @@ Seed側のビルドスクリプトは、`amivm`が既に`PATH`にある前提で
 ### CLIコマンド仕様
 
 ```
-amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verbose] [-i|--import <名前>=<importパス>]...
+amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verbose] [-i|--import <名前>=<importパス>]... [-h|--help]
 ```
 
 - `-o`/`--output`省略時の出力先は、IRファイルパスの拡張子を`.go`に置き換えたパス(拡張子が無ければ`.go`を付け足したパス)
 - `-v`/`--verbose`を付けると元のIR・型チェックの過程・最終的な生成コード・完了メッセージを標準出力に表示する。付けない場合、成功時は何も出力しない
 - `-i`/`--import <名前>=<importパス>`は繰り返し指定できる。指定した名前が生成コード内で`?<名前>.xxx`のように参照されていれば、`import <名前> "<importパス>"`という明示的なimportを生成コードに追加する。**Seedが独自のランタイムライブラリ(後述)を呼びたい場合はこれを使う。** 未使用の名前は自動的に取り除かれるため、同じマッピング一式を全IRファイルに使い回してよい
-- ファイル読み込み失敗・IRパースエラー・型チェック失敗などのエラーは`-v`/`--verbose`の有無に関わらず常に出力する
+- `-h`/`--help`を付けると使い方を表示して終了する。他オプションの妥当性検証より先に判定されるため、`<IRファイルパス>`無しの`amivm -h`単体でも動作する(Seed側からは通常使わない)
+- ファイル読み込み失敗・IRパースエラー・型チェック失敗などのエラーは`-v`/`--verbose`の有無に関わらず常に出力する。**エラー・使い方メッセージは全て英語。**Seed側で`amivm`の標準出力・標準エラーをそのままユーザーに転送している箇所(`cmd/seed/build.go`)は、この変更を意識した実装変更が不要(文字列の内容をパース・照合していないため)
 - `go build`による実行ファイル生成は行わない(別工程。Seed側のビルドパイプラインで実行する)
 
 ## AMIVM-IRの書き方(唯一の正確な仕様)
 
-以下はamivmの`docs/amivm_spec.md`(commit `253a3fd`時点)からの転記。**Seedのコード生成部がAMIVM-IRを出力する際は、この命令セット・カテゴリ・Kind分類に厳密に従うこと。** amivm本体のバージョンを上げた際は、`amivm/docs/amivm_spec.md`(または最新のamivmリポジトリ)と齟齬がないか確認すること。
+以下はamivmの`amivm_spec.md`(commit `020e6bc`時点。旧`docs/`配下から移動済み)からの転記。**Seedのコード生成部がAMIVM-IRを出力する際は、この命令セット・カテゴリ・Kind分類に厳密に従うこと。** amivm本体のバージョンを上げた際は、`amivm/amivm_spec.md`(または最新のamivmリポジトリ)と齟齬がないか確認すること。
 
 ### 制約・前提条件
 
-- `FUNC`・`STTYPE`はネスト不可。`IF`・`LOOP`・`CLOS`・`SEL`はいずれもネストできる(互いの本体の中に任意の組み合わせ・任意の深さで書ける。Seedの`internal/codegen`はif/elif/else・while・for-inをこの`IF`/`LOOP`に直接コンパイルしており、多用している)
+- `FUNC`・`FUNCM`(4.22節。レシーバー付きメソッド定義)・`STTYPE`・`INTYPE`(4.23節。インターフェース型)はネスト不可(いずれもトップレベルのみ)。`IF`・`LOOP`・`CLOS`・`SEL`はいずれもネストできる(互いの本体の中に任意の組み合わせ・任意の深さで書ける。Seedの`internal/codegen`はif/elif/else・while・for-inをこの`IF`/`LOOP`に直接コンパイルしており、多用している)
 - 配列は1次元固定長のみ。**多次元配列はAMIVM-IR自体では表現しない。Seed側で1次元に展開すること**(もっともSeedの言語仕様自体が1次元配列のみのため、この変換は不要になる見込み)
 - チャネル・スライス・map・構造体・クロージャーは、対応する`TYPE`系命令(`SLTYPE`/`MPTYPE`/`STTYPE`/`FNTYPE`)で型を定義してから使う
 - トークンの区切り文字は**タブ**。行頭のインデント用タブは無視。`//`で始まる行はコメントとして無視
+- `FUNC`/`FUNCM`/`STTYPE`/`INTYPE`/`CALL`/`DEFER`/`SPAWN`はGoジェネリクス(型パラメータ・明示的型引数)に対応した(後述)。**Seedの言語仕様自体にジェネリクスは無いため、Seedのコード生成はこの拡張構文を一切使わない。** 型パラメータ・型引数部分は完全に省略可能(コロンの個数で構文が変わる)で、省略時は旧仕様と同一のIRになるため後方互換性がある(実機のamivmで全examplesが無修正でビルドできることを確認済み)
 
 ### 識別子のプレフィックス
 
@@ -74,6 +76,7 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 | `@` | 関数外変数名(グローバル変数) |
 | `^` | 型名 |
 | `>` | 構造体フィールド名 |
+| `<` | メソッド名(`METHVAL`・`INTYPE`内の`METHOD`シグネチャで使う。未使用) |
 | `!` | amivm定義関数名(`!xxx`→`<関数名>_amivm_function`、`!main`→`main`) |
 | `?` | Go関数名(そのまま使う。標準ライブラリ・Seed独自ランタイム問わず) |
 | `#` | ラベル名 |
@@ -94,20 +97,26 @@ amivm <IRファイルパス> [-o|--output <出力ファイルパス>] [-v|--verb
 | 条件分岐 | `IF boolean1` / `ELIF boolean1` / `ELSE` / `ENDIF`(ブロック形。Goの`if`/`else if`/`else`に対応。単一行`IF boolean1 label`は廃止され後方互換は無い) |
 | ループ | `LOOP` / `BREAK` / `CONTINUE` / `ENDLOOP`(Goの無限`for {}`。条件付きループは`LOOP`の中で`IF`+`BREAK`を組み合わせて表現する) |
 | 型アサーション | `ASSERT multi1 (multi2) variable type1`(Goの`v.(T)`。未使用) |
-| 関数定義 | `FUNC defname type1 ... : type3 ...` / `RET` / `ENDFUNC` |
-| 関数呼び出し | `CALL multi1 ... : callname value1 ...` / `DEFER` / `SPAWN` |
+| 関数定義 | `FUNC defname (typename1 constraint1 ... :) type1 ... : type3 ...` / `RET` / `ENDFUNC`(`(typename1 constraint1 ... :)`は型パラメータ宣言。省略可・未使用) |
+| 関数呼び出し | `CALL multi1 ... : callname (type1 ... :) value1 ...` / `DEFER` / `SPAWN`(`(type1 ... :)`は明示的型引数。省略可・未使用) |
 | チャネル | `CHTYPE` `CHMAKE` `CHSEND` `CHRECV` |
 | select | `SEL` `CASESEND` `CASERECV` `DEFAULT` `ENDSEL`(`CASESEND`/`CASERECV`/`DEFAULT`はもう`label`を取らない。次のケースか`ENDSEL`までがブロック本体) |
 | スライス | `SLTYPE` `SLMAKE` `SLICE` |
-| 構造体 | `STTYPE` `FIELD` `ENDSTTYPE` `FSET` `FGET` |
+| 構造体 | `STTYPE`(型パラメータ宣言可。省略可・未使用) `FIELD` `ENDSTTYPE` `FSET` `FGET` |
 | map | `MPTYPE` `MPMAKE` `MSET` `MGET` `MPKEYS`(mapの全キーを`slices.Collect(maps.Keys(m))`で取得。未使用) |
 | クロージャー・関数型 | `FNTYPE` `CLOS` `ENDCLOS`(`CLOS`のみ元々ネスト可。代入先は`%xxx`に限らず`$N`/`@xxx`/`&N`/`&L-N`も可。いずれも未使用) |
+| メソッド値・関数値取得 | `METHVAL local variable method`(`local := variable.method`) / `FUNCVAL local callname`(`local := callname`)。いずれも`local`は`VAR`で事前宣言せず新規`:=`宣言。未使用 |
+| メソッド定義 | `FUNCM defname receiver (typename1 ... :) type1 ... : type3 ...` / `RET` / `ENDFUNCM`(レシーバー付きメソッド。本体内でレシーバーは`$0`。未使用) |
+| インターフェース型 | `INTYPE typename1 (typename2 constraint1 ...)` `METHOD method type1 ... : type3 ...` `ENDINTYPE`(未使用) |
+| ジェネリクス型実体化 | `GETYPE typename1 typename2 type1 ...`(`type typename1 = typename2[type1, ...]`。未使用) |
 
-各命令が生成するGoコードの詳細な対応表(全命令のGo生成形)は`amivm/docs/amivm_spec.md`(3.4節)を参照。**キャスト・組み込み関数(`close`/`len`/`cap`等)は専用命令を持たず`CALL`に統合されている**(Goの型変換`T(v)`は構文上`ast.CallExpr`と同一のため)。型アサーション(`v.(T)`)だけは構文が異なる別ASTノード(`ast.TypeAssertExpr`)になるため`CALL`に含めず`ASSERT`という専用命令になっている。Seedの`int()`/`float()`/`string()`/`len()`等のビルトイン関数をIRへ落とす際は、この`CALL`統合方式を踏まえること。`callname`(`CALL`の呼び出し対象)・`value`(値全般)は`%xxx`保持の関数値・メソッド値に加えて`@xxx`(パッケージレベル変数)・`$N`/`&N`(パラメータ・クロージャー引数)・`!xxx`/`?xxx`(関数そのものを呼ばずに値として渡す)も許容するよう拡張されたが、Seedはまだ第一級関数を持たないためこの拡張も未使用。
+各命令が生成するGoコードの詳細な対応表(全命令のGo生成形)は`amivm/amivm_spec.md`(4節)を参照。**キャスト・組み込み関数(`close`/`len`/`cap`等)は専用命令を持たず`CALL`に統合されている**(Goの型変換`T(v)`は構文上`ast.CallExpr`と同一のため)。型アサーション(`v.(T)`)だけは構文が異なる別ASTノード(`ast.TypeAssertExpr`)になるため`CALL`に含めず`ASSERT`という専用命令になっている。Seedの`int()`/`float()`/`string()`/`len()`等のビルトイン関数をIRへ落とす際は、この`CALL`統合方式を踏まえること。`callname`(`CALL`の呼び出し対象)・`value`(値全般)は`%xxx`保持の関数値・メソッド値に加えて`@xxx`(パッケージレベル変数)・`$N`/`&N`(パラメータ・クロージャー引数)・`!xxx`/`?xxx`(関数そのものを呼ばずに値として渡す)も許容するよう拡張されたが、Seedはまだ第一級関数を持たないためこの拡張も未使用。
+
+`FUNC`/`FUNCM`/`STTYPE`/`INTYPE`の型パラメータ宣言、`CALL`/`DEFER`/`SPAWN`の明示的型引数は、いずれも`(...)`区切り(実際にはコロンの個数で判別)の**任意**セグメントであり、省略すればSeedがこれまで生成してきたIRと完全に同じ構文になる。**Seedはジェネリクスを持たない言語なので、これらの新規構文(`METHVAL`/`FUNCVAL`/`FUNCM`/`INTYPE`/`GETYPE`を含む)は現時点で一切使用せず、`internal/codegen`の変更も不要だった**(下記「確定した設計判断」参照)。
 
 ### オペランドカテゴリ・Kind
 
-各命令の引数(`whole`/`integer`/`number`/`boolean`/`slice`/`ordered`/`value`/`variable`/`single1`/`single2`/`multi`/`field`/`type`/`label`等)がどの形式のトークンを許容するかは、`amivm/docs/amivm_spec.md`の3.5節(オペランドカテゴリ)・3.6節(Kindの形状分類)に定義されている。Seedのコード生成部がここから逸脱したトークンを出力すると、amivmのパース段階で拒否される。実装前に必ず該当節を通読すること。
+各命令の引数(`whole`/`integer`/`number`/`boolean`/`slice`/`ordered`/`value`/`variable`/`single1`/`single2`/`multi`/`field`/`type`/`label`等)がどの形式のトークンを許容するかは、`amivm/amivm_spec.md`の5節(オペランドカテゴリ)・6節(トークンの形状分類)に定義されている。Seedのコード生成部がここから逸脱したトークンを出力すると、amivmのパース段階で拒否される。実装前に必ず該当節を通読すること。
 
 ## 独自のGoランタイムを呼ぶ
 
@@ -138,7 +147,7 @@ ENDFUNC
 amivm hello.ir -o hello.go -i xxrt=yourmodule/xxrt
 ```
 
-**メソッド呼び出し**(例: `file.Close()`)は、`FNTYPE`でレシーバー込みの関数型を定義→`FGET`でメソッドを値として取得→`CALL`、という手順になる。Seedの`File`型はこの方式を使わず、`seedrt.File`(`?pkg.Func`+`CALL`で呼べる普通の構造体)を`^*seedrt.File`という外部型ポインタとして直接参照する形で実装した(下記「確定した設計判断」参照)。
+**メソッド呼び出し**(例: `file.Close()`)は、`FNTYPE`でレシーバー込みの関数型を定義→`FGET`でメソッドを値として取得→`CALL`、という手順になる(`FNTYPE`の型がGoの実際のメソッド値の型と厳密に一致しない場合の代替として、事前の型宣言を要らない`METHVAL`/`FUNCVAL`も追加された)。Seedの`File`型はどちらの方式も使わず、`seedrt.File`(`?pkg.Func`+`CALL`で呼べる普通の構造体)を`^*seedrt.File`という外部型ポインタとして直接参照する形で実装した(下記「確定した設計判断」参照)。
 
 ## 意味検証の責任分担(重要)
 
@@ -163,6 +172,7 @@ amivm hello.ir -o hello.go -i xxrt=yourmodule/xxrt
 - **CLIコマンド構成**: `seed <build|run|emit-ir|emit-go|help> [-o file] [-v] <file.seed>`。`build`/`emit-ir`/`emit-go`はパイプラインの異なる段階(実行ファイル/AMIVM-IR/Goソース)で止めて出力するだけの違いで、共通ロジックは`cmd/seed/build.go`の`compileToIR`→`compileToGo`→`compileToBinary`という3段の関数に分けて実装している(各コマンドは必要な段までしか呼ばない)。`-v`は生成されたIR・amivm自身の`-v`トレース(型チェック過程+最終Goコード)を標準出力に流すだけで、amivmの`-v`を素通しする形に倣っている
 - **`seed`自体の配布は`go install`のみ**(amivmと同じ方針): `go.mod`のモジュールパスは`github.com/amisonnet8/seed`(実リポジトリのパスと一致させる必要がある。`go install`はVCS経由でモジュールを解決するため、パスなしの`module seed`のようなプレースホルダー名では動かない)。Seedのビルドは最終的に必ず`go build`を経由するため、エンドユーザーは元々Goツールチェーンを持っている前提になり、バイナリ配布やDocker配布は現時点では採用していない(将来必要になれば追加を検討)
 - **`IF`/`LOOP`ブロック化への追随**(commit `253a3fd`): amivmが単一行`IF boolean1 label`を廃止しブロック形の`IF`/`ELIF`/`ELSE`/`ENDIF`と`LOOP`/`BREAK`/`CONTINUE`/`ENDLOOP`に置き換えた(後方互換無し)のに伴い、`internal/codegen`のif/elif/else・while・for-inの生成をLABEL/GOTOの平坦なgoto連鎖から、これらのブロック命令へ全面的に書き換えた(`stmt.go`・`array.go`)。elif連鎖は`ELIF`トークンをそのまま使わず、`ELSE`の中に次の`IF`をネストする形で自前生成している(`ELIF boolean1`は条件オペランドがそのIR行の時点で既に値になっている必要があり、複数命令が要る条件式を「1つ前の節の`}`」と「`else if`」の間に挟む余地が無いため。ネストなら各節の条件計算をそれを守る`ELSE`の中に自然に置け、しかも短絡評価も自動で成立する)。`break`は常に素の`BREAK`(最も内側の`LOOP`を抜ける)。`continue`はwhileでは素の`CONTINUE`で足りる(条件再チェックが`LOOP`本体の先頭にあるため)が、for-inだけは例外で、インデックスの`++`が本体の**後**にあるため素の`CONTINUE`だと`++`を飛ばしてしまう。そこで`LABEL`/`GOTO`(今回の変更後も存置されている)をfor-inの`continue`専用に残し、`++`直前のラベルへ`GOTO`する。ただしラベルは`continue`が無いfor-in本体では誰からも参照されず`go/types`の「declared and not used」で失敗するため、本体の通常フォールスルー末尾にも常に`GOTO`を1本置いてラベルの被参照を保証している(実装時に実際にこの失敗を踏んで発見した。`internal/codegen/stmt.go`のgenForInStmt参照)。VARを関数先頭へホイストする既存の仕組み(旧goto連鎖時代に「gotoが宣言を飛び越える」問題を避けるためのもの)は、ブロック化で理論上は不要になったが、shadowing用の命名スキーム(`scope.go`)が依存しているため変更せず維持している
+- **METHVAL/FUNCVAL/FUNCM/INTYPE/GETYPE追加・ジェネリクス対応への追随**(commit `020e6bc`): amivmが構造体メソッド定義(`FUNCM`/`ENDFUNCM`)・インターフェース型(`INTYPE`/`METHOD`/`ENDINTYPE`)・メソッド値/関数値の`:=`取得(`METHVAL`/`FUNCVAL`。旧`METHOD`は`METHVAL`に改名)・ジェネリクス型の実体化(`GETYPE`)を新規追加し、`FUNC`/`FUNCM`/`STTYPE`/`INTYPE`/`CALL`/`DEFER`/`SPAWN`にGoジェネリクス(型パラメータ・明示的型引数)対応を加えた。調査の結果、**`internal/codegen`の変更は一切不要と判断した**: Seedの言語仕様自体に構造体・インターフェース・ジェネリクス・メソッド定義が無く、これらの新命令をどれも生成する理由がないため。加えて、Seedが実際に生成している`FUNC`/`CALL`/`DEFER`/`SPAWN`/`STTYPE`の構文(型パラメータ・型引数を伴わない形)は、新仕様でもコロン1個の従来どおりの構文としてそのまま受理される(型パラメータ・型引数セグメントは省略可能な拡張として追加されたため)。実機の`amivm`(`go install`済み)で`examples/`配下の全`.seed`ファイルを`seed build`→実行まで無修正で確認済み。ドキュメント側は本ファイルの命令一覧・識別子プレフィックス表・節番号参照(`amivm/docs/amivm_spec.md`→`amivm/amivm_spec.md`、旧3.4/3.5/3.6節→新4/5/6節)を追随させた。今後Seedの言語仕様に構造体・インターフェース・ジェネリクスを追加する際は、`FUNCM`(メソッド定義)・`INTYPE`(インターフェース)・`GETYPE`(ジェネリクス型実体化)がその受け皿になる
 
 以降、新しい設計判断が生じた場合もこの節(または実装コード側のコメント)に確定内容を残し、仮説段階のまま放置しないこと。
 
@@ -201,5 +211,9 @@ seed/
 2. AMIVM-IRを生成する処理を書いたら、実際に`amivm`(`PATH`にインストール済みのもの)にかけて`go build`まで通し、動作確認する。IRの構文・カテゴリ違反はamivmのパース/型チェックで初めて顕在化するため、「ロジック上正しそうに見える」だけで済ませない
 3. Seedの意味検査(型チェック等)は、amivmに渡す前にSeed側で完了させる。amivmの`go/types`エラーをユーザー向けエラーとしてそのまま出さない
 4. 新しい構文・ビルトイン関数を実装したら、対応するサンプルSeedプログラムを`examples/`に追加し、生成されたIR・Goコード・実行結果まで確認する
-5. amivm本体の仕様が更新された場合(`amivm/docs/amivm_spec.md`または最新リポジトリを再確認)、本ファイルの「AMIVM-IRの書き方」節が古くなっていないか照合し、必要なら更新する
+5. amivm本体の仕様が更新された場合(`amivm/amivm_spec.md`または最新リポジトリを再確認)、本ファイルの「AMIVM-IRの書き方」節が古くなっていないか照合し、必要なら更新する
 6. IRの生成方式を大きく書き換えた・「IR的には正しそうなのにgo buildで初めて発覚した」類のバグを踏んだなど、次にAMIVM上で別言語を実装する人/AIへ申し送るべき知見が生まれたら、`seed_implementation_notes.md`にも反映する
+
+## AIによる開発支援時の注意点
+
+- 作業内容のsummary(要約)や、ユーザーへの質問は日本語で行う
