@@ -73,7 +73,7 @@ $ seed run hello.seed
 Hello, Seed!
 ```
 
-More runnable examples covering variables/null, operators, control flow, arrays, functions, and file I/O live in [`examples/`](examples/).
+More runnable examples covering variables/null, operators, control flow, arrays, functions, file I/O, builtin functions, and string escape sequences live in [`examples/`](examples/).
 
 ## Language
 
