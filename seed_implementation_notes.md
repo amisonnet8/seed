@@ -1,9 +1,9 @@
 # AMIVM上で言語を実装するときのヒント(Seedの実装から)
 
-> 取り込み元: Seed(`github.com/amisonnet8/seed`, commit `46fb3c0`時点)の実装過程で得られた知見。
+> 取り込み元: Seed(`github.com/amisonnet8/seed`, commit `46fb3c0`以降)の実装過程で得られた知見。
 > 次にAMIVM上で別言語(命令セットを全て使う想定)を実装するAI向けの申し送り。
 > Seed自体の言語仕様の話ではなく、**「AMIVM-IRを生成するフロントエンドを書くときに踏む地雷・使える型」の話**に絞っている。
-> 初版はamivm commit `cd972aa`時点の知見だったが、その後amivmが単一行`IF boolean1 label`をブロック形`IF`/`ELIF`/`ELSE`/`ENDIF`・`LOOP`/`BREAK`/`CONTINUE`/`ENDLOOP`へ置き換える大きな変更(`253a3fd`、後方互換無し)を行い、Seedもそれに追随した。本書はその移行で得た知見も反映済み(§2が新規追加分)。さらにamivmはメソッド定義・インターフェース・ジェネリクスに相当する`FUNCM`/`INTYPE`/`GETYPE`等を追加(`020e6bc`)したが、こちらはSeedの言語仕様に対応する機能が無く実装変更は不要だった(§6.6が新規追加分。未検証の手がかりとして記載)。
+> 初版はamivm commit `cd972aa`時点の知見だったが、その後amivmが単一行`IF boolean1 label`をブロック形`IF`/`ELIF`/`ELSE`/`ENDIF`・`LOOP`/`BREAK`/`CONTINUE`/`ENDLOOP`へ置き換える大きな変更(`253a3fd`、後方互換無し)を行い、Seedもそれに追随した。本書はその移行で得た知見も反映済み(§2が新規追加分)。さらにamivmはメソッド定義・インターフェース・ジェネリクスに相当する`FUNCM`/`INTYPE`/`GETYPE`等を追加(`020e6bc`)したが、こちらはSeedの言語仕様に対応する機能が無く実装変更は不要だった(§6.6が新規追加分。未検証の手がかりとして記載)。さらに名前付き固定長配列型`ARTYPE`(`ac108e9`)と整数リテラルの16進/8進/2進・桁区切り`_`(`22c701f`)が追加されたが、どちらもSeedは採用しなかった(§6.8・§9参照)。
 
 ## 0. Seedが実証した命令・していない命令
 
@@ -26,7 +26,7 @@ SLTYPE SLMAKE
 `IF`は元々「単一行の条件付きgoto」(`IF boolean1 label`)だったが、amivm commit `253a3fd`でブロック形(Goの`if`/`else if`/`else`に対応)へ全面的に置き換えられ、旧仕様との後方互換は無かった。この移行の詳細と、そこで実際に踏んだ地雷は§2にまとめてある。
 
 **未実証**(Seedの言語仕様に対応する構文が無かったため一度も生成していない):
-`BAND BOR BXOR BCLEAR BNOT`(ビット演算)、`SHL SHR`(シフト)、`ADDR PGET PSET`(ポインタ)、`DEFER SPAWN`、`CHTYPE CHMAKE CHSEND CHRECV SEL CASESEND CASERECV DEFAULT ENDSEL`(チャネル・goroutine・select)、`SLICE`(部分切り出し)、`STTYPE FIELD ENDSTTYPE FSET FGET`(構造体)、`MPTYPE MPMAKE MSET MGET MPKEYS`(map)、`FNTYPE CLOS ENDCLOS`(クロージャー・関数型)、`ASSERT`(型アサーション。`any`型自体をSeedが持たないため出番が無い)。
+`BAND BOR BXOR BCLEAR BNOT`(ビット演算)、`SHL SHR`(シフト)、`ADDR PGET PSET`(ポインタ)、`DEFER SPAWN`、`CHTYPE CHMAKE CHSEND CHRECV SEL CASESEND CASERECV DEFAULT ENDSEL`(チャネル・goroutine・select)、`SLICE`(部分切り出し)、`STTYPE FIELD ENDSTTYPE FSET FGET`(構造体)、`MPTYPE MPMAKE MSET MGET MPKEYS`(map)、`FNTYPE CLOS ENDCLOS`(クロージャー・関数型)、`ASSERT`(型アサーション。`any`型自体をSeedが持たないため出番が無い)、`METHVAL FUNCVAL`(メソッド値・関数値取得)、`FUNCM ENDFUNCM`(レシーバー付きメソッド定義)、`INTYPE METHOD ENDINTYPE`(インターフェース)、`GETYPE`(ジェネリクス型実体化)、`ARTYPE`(名前付き固定長配列型。Seedは`SLTYPE`+`SLMAKE`のGoスライスを一貫して使うため出番が無い。§6.8参照)。
 
 次の言語がこれらを使うなら、**§6の「先読み情報」は未検証の推測を含む**ことを念頭に、実装したら必ずamivm+go buildで裏取りすること(§7.1参照)。
 
@@ -181,6 +181,15 @@ Seedにはこれらを使う言語機能(独自メソッド定義・インター
 
 これは驚きが少ないはず。`ADD`/`SUB`と全く同じ形の2項(`BNOT`のみ単項)演算命令。Seedで確立した「演算子ごとに命令を振り分け、一時変数へ結果を格納する」パターン(`internal/codegen/expr.go`の`genBinary`)がそのまま流用できる。
 
+### 6.8 名前付き固定長配列型(`ARTYPE`)
+
+`ARTYPE typename1 type1 imm`(`type typename1 [imm]type1`)は、Goのネイティブな固定長配列型`[N]T`をそのまま生成する。`SLTYPE`+`SLMAKE`(Goスライス)とは別物で、**`imm`オペランドは識別子(変数)を一切許さず、リテラルのみ**(`0`,`1234`,`'A'`。5節の`imm`カテゴリ参照)。つまりサイズは構文レベルで完全にコンパイル時定数であることが強制される。
+
+- Seedがこれを採用しなかった理由がそのまま次の言語への判断材料になる: 対象言語の配列(あるいは固定長のリスト的な型)の要素数が、**関数引数やそれ以外の実行時に決まる値であり得るなら`ARTYPE`は使えない**(Seedの`Int[size]`がまさにこのケース)。`SLTYPE`+`SLMAKE`(実行時の`whole`オペランドをそのままサイズに使える)を使うこと。
+- 逆に、対象言語が「配列の要素数は必ずソースコード上の定数(あるいはコンパイル時に定数畳み込みできる式)」という制約を持つ言語(Cの固定長配列に近い意味論など)なら、`ARTYPE`はGoスライスよりメモリレイアウトが直接的で、ヒープ確保も発生しない分有利な選択肢になりうる。
+- 配列は既存のインライン記法`^[n]type1`(`ARTYPE`を経由せず、型を書ける場所に直接複合形で書く)でも表現できる。`ARTYPE`は名前を付けて複数箇所で使い回したい場合の糖衣構文に過ぎず、必須ではない。
+- 実例はamivmリポジトリの`examples/23_artype.ir`を参照。
+
 ## 7. 開発プロセスの教訓
 
 ### 7.1 機能単位の縦切りステップ + 各ステップでamivm+go buildの実地検証必須
@@ -225,3 +234,4 @@ lexer → parser → ast ← sema
 - Goのラベルは関数スコープ単位なので、ラベル名の連番カウンタは関数(あるいはクロージャー)ごとにリセットしてよい。全関数を跨いだグローバル連番にする必要はない。
 - 文字列の「長さ」を持つ組み込み関数を作るなら、Goの素の`len(string)`は**バイト数**であって文字数(rune数)ではないことに注意。多言語テキストを想定するなら`unicode/utf8.RuneCountInString`を使う。
 - amivmの`IF`/`ELIF`/`ELSE`/`ENDIF`・`LOOP`/`BREAK`/`CONTINUE`/`ENDLOOP`は、対象言語の`if`/`while`/`for`をコード生成する際に**まず第一候補として検討する**こと。§1の`LABEL`/`GOTO`ベースの巻き上げ方式は、ブロック命令で表現できない場合に限定した「フォールバック」として位置づけるのが、今のamivmの命令セットに一番素直に沿った設計になる。
+- 整数リテラルは10進(桁区切り`_`可)に加えて16進(`0x1A`)・8進(`0o17`)・2進(`0b101`)がGoの構文をそのまま踏襲する形で書ける(6節)。対象言語のソース上に同じ記法があるなら、コード生成側で10進へ変換し直さず**そのままIRへ転記してよい**(値としてもGo側の解釈としても等価で、可読性も上がる)。ただし`_`は基数プレフィックスの直後・数字と数字の間にしか置けない(先頭・末尾・連続`_`は不可)ので、対象言語の桁区切り規則がこれと異なる(例: 3桁ごと固定でなく任意位置を許す)場合は素通しせずGo側の規則に合わせて出力すること。Seedの言語仕様(`seed_spec.md`)自体には10進以外のリテラルが無いため、この転記パターンはSeedでは未使用。
